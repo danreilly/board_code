@@ -1,9 +1,8 @@
 #ifndef _QREGS_H_
 #define _QREGS_H_
 
-
-#include <iio.h>
 #include "hdl.h"
+
 
 // error codes returned by qregs_ functions:
 #define QREGS_ERR_FAIL  1
@@ -12,7 +11,7 @@
 #define QREGS_ERR_PARAM 4
 #define QREGS_MAX_ERR   4
 
-char *qregs_last_err(void);
+char *qregs_last_errmsg(void);
 void qregs_print_last_err(void);
 
 
@@ -33,6 +32,13 @@ typedef struct version_info_struct {
   int cipher_w;
   int tx_mem_addr_w;
 } qregs_version_info_t;
+
+
+int qregs_get_hdr_detection_stats(int *hdr_cnt, int *mag_tot);
+
+
+// IM bias
+#define QREGS_IM_BIAS_RANGE_V (10.8)
 
 
 // parameters to correct imperfection of optical hybrid
@@ -74,7 +80,20 @@ typedef struct qsdc_data_cfg_st {
   int bit_dur_syms;      // duration of one bit in units of symbols
 } qregs_qsdc_data_cfg_t;
 
-
+typedef struct qregs_qsdc_other_cfg_st {
+  int stream;
+  int cipher_en;   // usually 1
+  int decipher_en; // usually 1
+  int cipher_symlen_asamps;
+  int m;
+  int dbg_cipher_same;
+} qregs_qsdc_other_cfg_t;
+// symlen_asamps: symbol length in units of asamps.
+//                typically the same as osamp, but could be different
+//                for certain experiments.
+// m: m = cipher modulation.  m-psk.
+//        2=bpsk, 4=qpsk, etc.
+void qregs_qsdc_other_cfg(qregs_qsdc_other_cfg_t *other_cfg);
 
 
 
@@ -148,7 +167,7 @@ typedef struct qregs_struct {
 
   char sync_ref; // r=rxclk, p=power, or h=headers
   int sync_dly_asamps; // header sync to DAC ouput delay
-  int tx2rx_dly_asamps; // for alice, rx to tx dly
+  int rx2tx_dly_asamps; // for alice, rx to tx dly
   
   int frame_qty;
   int meas_noise_en;
@@ -162,7 +181,7 @@ typedef struct qregs_struct {
   int is_bob;
   char tx_go_condition; // 'p'=power,'h'=header','r'=ready,'i'=immediate
 
-  //  lcl_iio_t lcl_iio;
+
   int setflags;
 
   int uio_fd;
@@ -185,12 +204,15 @@ typedef struct qregs_struct {
 
   double voa_attn_dB[QREGS_NUM_VOA];
   int opsw_cross[QREGS_NUM_OPSW];
-  
+
+  double xph_deg; // extra phase.  applied after hdr derot
 } qregs_st_t;
 
 extern qregs_st_t st;
 extern int qregs_fwver;
 
+
+void qregs_set_init(void);
 int qregs_dur_us2samps(double us);
 double qregs_dur_samps2us(int s);
 void qregs_set_rx_subcyc_dly_asamps(int dly);
@@ -234,14 +256,6 @@ void qregs_set_hdr_det_thresh(int hdr_pwr, int hdr_corr);
 void qregs_set_hdr_im_dly_cycs(int hdr_im_dly_cycs);
 void qregs_set_pm_dly_cycs(int pm_dly_cycs);
   
-void qregs_set_cipher_en(int en, int symlen_asamps, int m);
-// en: 0 = no phase modulation during body
-//     1 = "random" phase modulation during body
-// symlen_asamps: symbol length in units of asamps.
-//                typically the same as osamp, but could be different
-//                for certain experiments.
-// m: m = cipher modulation.  m-psk.
-//        2=bpsk, 4=qpsk, etc.
 
 
 void qregs_set_tx_always(int en);
@@ -258,7 +272,10 @@ void qregs_set_tx_mem_circ(int en);
 
 void qregs_set_tx_same_hdrs(int same);
 void qregs_set_tx_same_cipher(int same);
-void qregs_search_and_txrx(int en);
+// search en is being phased out
+void qregs_search_and_txrx(int search_en, int en);
+void qregs_txrx_new(int tx_en, int rx_en);
+
 void qregs_halfduplex_is_bob(int en);
 
 // if we dont save after init or pwr, what do we save after?
@@ -268,7 +285,7 @@ void qregs_set_save_after_hdr(int en);
 
 int  qregs_set_qsdc_data_cfg(qregs_qsdc_data_cfg_t *data_cfg);
 
-void qregs_set_cdm_cfg(hdl_cdm_cfg_t *cdm_cfg, ssize_t *rx_buf_sz_bytes);
+void qregs_set_cdm_cfg(hdl_cdm_cfg_t *cdm_cfg, size_t *rx_buf_sz_bytes);
 // sets rx_buf_sz_bytes according to requested params in cdm_cfg.
 
 void qregs_set_alice_txing(int en);
@@ -280,18 +297,10 @@ void qregs_set_osamp(int osamp);
 
 
 void qregs_set_cdm_frame_pd_asamps(int frame_pd_asamps);
-void qregs_set_frame_pd_asamps(int frame_pd_asamps);
+int qregs_set_frame_pd_asamps(int frame_pd_asamps);
 // inputs:
 //       frame_pd_asamps: requested frame period in units of ADC/DAC samples.
 // call this BEFORE qregs_set_hdr_len_bits
-// NOTE: Calling code should NOT try to make probe_pd_samps
-//       conform to any restriction, such as being a multiple
-//       of 16 or 10.  In particular, the true restriction depends
-//       on the hardware implementation of the recovered clock from
-//       the SFP, which calling code should not have to anticipate.
-//       Qregs will choose the closeset frame period it can implement.
-//       Calling code can check st.frame_pd_asamps to see what
-//       the new effective frame period is.
 
 
 // TODO: change to qregs_set_pilot/probe_len_asamps
@@ -389,6 +398,20 @@ int qregs_get_lo_status(qregs_lo_status_t *status);
 
 
 
+// same as rp_hist_t.
+// TODO: merge two
+typedef struct qregs_pwr_hist_st {
+  double pilot_pwr_V;
+  double mean_pwr_V;
+  double body_pwr_V;
+  double dark_pwr_V;
+  double ext_rat_dB;
+  double body_rat_dB;
+  double bins[64];
+} qregs_pwr_hist_t;
+
+
+// Below DEPRECATED, since qregs_pwr_hist_st has more info
 typedef struct qregs_frame_pwrs_st {
   double dark_pwr_V;
   double body_pwr_V;
@@ -426,8 +449,8 @@ int qregs_set_voa_attn_dB(int voa_i, double *attn_dB);
 // sets it to "pass" duing qsdc.
 #define QREGS_OPSW_L   (0)
 // RX1 is the first recieve switch.
-#define QREGS_OPSW_RX1 (2)
 #define QREGS_OPSW_RX2 (1)
+#define QREGS_OPSW_RX1 (2)
 
 extern char *qregs_opsw_name[];
 

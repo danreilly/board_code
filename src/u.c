@@ -56,11 +56,21 @@ void err(char *str) {
   exit(1);
 }
 
-
-void qerr(char *msg) {
-  printf("ERR: %s\n", qregs_last_err());
-  printf("     %s\n", msg);
+int cmd_err_syntax(char *msg) {
+  printf("ERR: %s\n", msg);
+  return CMD_ERR_SYNTAX;
 }
+int cmd_err_fail(char *msg) {
+  printf("ERR: %s\n", msg);
+  return CMD_ERR_FAIL;
+}
+int qerr(char *msg) {
+  printf("ERR: %s\n", qregs_last_errmsg());
+  printf("     %s\n", msg);
+  return CMD_ERR_FAIL;
+}
+
+
 
 
 ini_val_t *tvars;
@@ -196,14 +206,6 @@ int cmd_circ(int arg) {
   return 0;
 }
 
-int cmd_ciph(int arg) {
-  int en;
-  if (parse_int(&en))
-    return CMD_ERR_NO_INT;
-  qregs_set_tx_same_cipher(en);
-  printf("%d\n", st.tx_same_cipher);
-  return 0;
-}
 
 
 int cmd_rst(int arg) {
@@ -212,11 +214,13 @@ int cmd_rst(int arg) {
   qregs_search_en(0);
   qregs_set_tx_mem_circ(0);
   qregs_set_memtx_to_pm(0);
+  qregs_set_tx_pilot_pm_en(1);
   h_w_fld(H_DAC_CTL_ALICE_SYNCING, 0);
   h_w_fld(H_DAC_HDR_SECOND_IM_IS_PROBE, 0);  
   printf("rst\n");
   return 0;
 }
+
 
 int cmd_shutdown(int arg) {
   if (!u_ask_yn("really shutdown",-1)) return 0;
@@ -233,7 +237,7 @@ int cmd_dbg_rpinfo(int arg) {
     printf("ERR: cant get info from Red Pitaya");
     return CMD_ERR_FAIL;
   }else
-    printf(str);
+    printf("%s",str);
   return 0;
 }
 
@@ -277,7 +281,7 @@ int cmd_stat(int arg) {
 
 int cmd_proto(int arg) {
   double d;
-  int i, j;
+  int i, j,k;
   
   d = ini_ask_num(tvars, "osamp (1,2,4)", "osamp", 4);
   qregs_set_osamp(d);
@@ -305,12 +309,16 @@ int cmd_proto(int arg) {
   printf("body_len_asamps %d\n", st.body_len_asamps);
 
 
-  if (st.is_bob)
-    i = ini_ask_yn(tvars,"cipher_en", "cipher_en", st.cipher_en);
-  else
-    i=0;
-  j = ini_ask_num(tvars, "cipher_m (for m-psk)", "cipher_m", 2);
-  qregs_set_cipher_en(i, st.osamp, j);
+  qregs_qsdc_other_cfg_t oth ={0};
+  oth.cipher_en   = ini_ask_yn(tvars,"cipher_en", "cipher_en", 0);
+  oth.decipher_en = ini_ask_yn(tvars,"decipher_en", "decipher_en", 0);
+  oth.m = ini_ask_num(tvars, "cipher_m (for m-psk)", "cipher_m", 2);
+  oth.stream = 0;
+  oth.dbg_cipher_same=0;
+  qregs_qsdc_other_cfg(&oth);
+  //  qregs_set_cipher_en(i, st.osamp, k, j);
+
+  
   
   if (st.osamp!=st.cipher_symlen_asamps)
     printf("  actually symlen = %d\n", st.cipher_symlen_asamps);
@@ -353,6 +361,8 @@ int cmd_proto(int arg) {
 
   printf("  bits per frame %.3lf\n", (double)i/st.qsdc_data_cfg.bit_dur_syms/
 	 st.qsdc_data_cfg.symbol_len_asamps);
+
+    
   
 }
 
@@ -446,6 +456,7 @@ int cmd_rp(int arg) {
     printf("ERR: tx would block\n");
   printf("now rx:\n");
   cmd_rx(0);
+  return 0;
 }
 
 
@@ -757,7 +768,7 @@ int cmd_pm_sin(int arg) {
   dac_buf_sz = mem_sz / sz;
   dac_buf = iio_device_create_buffer(dac, dac_buf_sz, false);
   if (!dac_buf) {
-    sprintf(errmsg, "cant create dac bufer  nsamp %d", dac_buf_sz);
+    sprintf(errmsg, "cant create dac bufer  nsamp %zd", dac_buf_sz);
     err(errmsg);
   }
 
@@ -811,8 +822,10 @@ int cmd_phest(int arg) {
   int i;
   double d;
   if (parse_int(&i)) return CMD_ERR_NO_INT;
-  if (parse_double(&d)) return CMD_ERR_SYNTAX;
+  if (parse_double(&d))
+    d = st.xph_deg;
   qregs_set_phase_est_en(i, d);
+  printf("%d %.3f\n", st.phase_est_en, st.xph_deg);
   return 0;
 }
 
@@ -823,6 +836,65 @@ int cmd_pm_dly(int arg) {
   printf("%d\n", st.pm_dly_cycs);
   return 0;
 }
+
+
+int cmd_im_bias(int arg) {
+  int ch, e;
+  double bias_V;
+  if (parse_int(&ch)) {
+    rp_set_t set;
+    e = rp_get_settings(&set);
+    if (e) qerr("rp_get_settings failed");
+    printf("bias %.6f %.6f (V)\n", set.bias_V[0], set.bias_V[1]);
+    return 0;
+  }
+  if (parse_double(&bias_V)) return CMD_ERR_NO_INT;
+  e = rp_set_bias(ch, bias_V);
+  if (e) qerr("rp_set_bias failed");
+  return 0;
+}
+
+
+
+int cmd_im_bsweep(int arg) {
+  // usage: bweep <ch> where 1=after im1, 2=after im2
+  int i, ch, e;
+  double b_V, step;
+  rp_hist_t hist;
+  if (parse_int(&ch)) return CMD_ERR_NO_INT;
+  step=QREGS_IM_BIAS_RANGE_V/16;
+  printf("optical power as a function of bias");
+  printf("bias_V  pilot_V  body_V  mean_V\n");
+  for(i=0;i<16;++i) {
+    b_V = step*i;
+    e = rp_set_bias(ch, b_V);
+    if (e) {err("rp_set_bias failed\n"); break;}
+    printf("%7.6f", b_V);
+    e=rp_meas_pwr_hist(ch, &hist);
+    if (e) {err("rp_meas_pwr_hist failed\n"); return CMD_ERR_FAIL;}
+    printf("  %7.3f %7.3f  %7ef", hist.pilot_pwr_V, hist.body_pwr_V, hist.mean_pwr_V);
+  }
+  printf("\n");
+  return 0;
+}
+
+int cmd_im_hist(int arg) {
+  int ch, i, e;
+  rp_hist_t hist;
+  if (parse_int(&ch)) return CMD_ERR_NO_INT;
+  char c=parse_nonspace();
+  while(1) {
+    e= rp_meas_pwr_hist(ch, &hist);
+    if (e) {printf("err: no rsp from RP?\n");  return CMD_ERR_FAIL;}
+    printf("  ext  %4.1f dB    b/m %4.1f dB   body %7.3f V\n",
+	   hist.ext_rat_dB, hist.body_rat_dB, hist.body_pwr_V);
+    if (!c) break;
+    for(i=0;i<64;++i)
+      printf(" %7.6lf",hist.bins[i]);
+    usleep(1000*1000);
+  }
+}
+
 int cmd_im_dly(int arg) {
   int dly;
   if (parse_int(&dly)) return CMD_ERR_NO_INT;
@@ -950,7 +1022,60 @@ int cmd_sync_resync(int arg) {
   printf("resynced\n\n");
   qregs_print_sync_status();  
   return 0;
-}  
+}
+
+int cmd_sync_dbg(int arg) {
+  int hdr_cnt, mag_tot, i;
+  int e;
+  printf("hdr cnt and mag tot at current sync dly\n");
+  for(i=1;i<16;++i) {
+    e=qregs_get_hdr_detection_stats(&hdr_cnt, &mag_tot);  
+    if (e) return qerr("qregs_get_hdr_detection_stats failed");
+    printf(" %6d %6d\n", hdr_cnt, mag_tot);
+  }
+  return 0;
+}
+
+int cmd_sync_tsweep(int arg) {
+  int max, th, th_sav, i, pilot_cnt, mag_tot, e;
+  if (parse_int(&max))
+    return cmd_err_syntax("specify max thresh");
+  th_sav = st.hdr_corr_thresh;
+  printf("th  pilot_cnt mag_tot\n");
+  for (i=0; i<16;++i) {
+    th =(16-i)*max/16;
+    qregs_set_hdr_det_thresh(st.hdr_pwr_thresh, th);
+    e=qregs_get_hdr_detection_stats(&pilot_cnt, &mag_tot);
+    if (e) qerr("qregs_get_hdr_detection_stats failed");
+    printf("%6d %6d %6d\n", th, pilot_cnt, mag_tot);
+  }
+  qregs_set_hdr_det_thresh(st.hdr_pwr_thresh, th_sav);
+  printf("corr_thresh restored back to %d\n", st.hdr_corr_thresh);
+  return 0;
+}
+
+int cmd_sync_sweep(int arg) {
+  int i, hdr_cnt, mag_tot, best, best_i, avg, e;
+  for (i=0; i<st.frame_pd_asamps; i+=4) {
+    //    for (i=0; i<8; i+=4) {
+    qregs_set_sync_dly_asamps(i);
+    e=qregs_get_hdr_detection_stats(&hdr_cnt, &mag_tot);
+    if (e) return qerr("BUG: qregs_get_hdr_detection_stats failed");
+    if (!hdr_cnt)
+      avg=0;
+    else
+      avg=mag_tot/hdr_cnt;
+    if ((i==0)||(avg > best)) {
+      best_i = i;
+      best   = avg;
+    }
+    printf("%3d  %5d/%5d = %d\n", i, mag_tot, hdr_cnt, avg);
+  }
+  printf("setting: sync_dly_asamps %d\n", best_i);
+  qregs_set_sync_dly_asamps(best_i);
+  return 0;
+}
+
 int cmd_sync_dly(int arg) {
   int dly;
   if (parse_int(&dly)) return CMD_ERR_NO_INT;
@@ -960,9 +1085,13 @@ int cmd_sync_dly(int arg) {
 }
 int cmd_dly_rx2tx(int arg) {
   int dly;
-  if (parse_int(&dly)) return CMD_ERR_NO_INT;
+  if (parse_int(&dly)) {
+    dly = ini_ask_num(tvars, "rx to tx (asamps)",
+		      "rx2tx_dly_asamps", st.rx2tx_dly_asamps);
+
+  }
   qregs_set_rx2tx_dly_asamps(dly);
-  printf("%d\n", st.sync_dly_asamps);
+  printf("%d\n", st.rx2tx_dly_asamps);
   return 0;
 }
 
@@ -1023,22 +1152,34 @@ int cmd_qsdc_cfg(int arg) {
 }
 
 int cmd_opsw(int arg) {
-  int idx, cross;
-  if (parse_int(&swi))   return CMD_ERR_SYNTAX;
+  int idx, i,cross, e;
+  if (parse_int(&idx))   { // base one
+    for(i=0;i<QREGS_NUM_OPSW;++i)
+      printf(" %s=%d", qregs_opsw_name[i], st.opsw_cross[i]);
+    printf("\n");
+    return 0;
+  }
   if (parse_int(&cross)) return CMD_ERR_SYNTAX;
-  e = qregs_set_opsw(swi, &cross);
-  if (e) qerr("setting opsw");
-  printf("%d\n", cross);
+  --idx;
+  e = qregs_set_opsw(idx, &cross);
+  if (e) qerr("failed to set opsw");
+else  printf("%d (for %s)\n", cross, qregs_opsw_name[idx]);
   return 0;
 }
 
 int cmd_voa(int arg) {
-  int idx;
-  double attn_dBm
-  if (parse_int(&idx))   return CMD_ERR_SYNTAX;
+  int i, idx, e;
+  double attn_dBm;
+  if (parse_int(&idx))  { // base one
+    for(i=0;i<QREGS_NUM_VOA;++i)
+      printf(" %s=%.2f", qregs_voa_name[i], st.voa_attn_dB[i]);
+    printf("\n");
+    return 0;
+  }
   if (parse_double(&attn_dBm)) return CMD_ERR_SYNTAX;
+  --idx;
   e = qregs_set_voa_attn_dB(idx, &attn_dBm);
-  if (e) qerr("setting voa");
+  if (e) qerr("failed to set voa");
   printf("%.2f\n", attn_dBm);
   return 0;
 }
@@ -1052,6 +1193,7 @@ int cmd_dbg_search(int arg) {
     qregs_print_hdr_det_status();
     usleep(1000*1000);
   }
+  return 0;
 }
 
 
@@ -1078,6 +1220,13 @@ int cmd_lo_wl(int arg) {
   printf("%.3f\n", wl_nm);
   return 0;
 }
+
+cmd_info_t im_cmds_info[]={
+  {"bsweep",  cmd_im_bsweep,  0, "sweep bias meas pwr",    "<ch>"},
+  {"hist",    cmd_im_hist,    0, "meas hist of frame pwr", "<ch>"},
+  {"bias",    cmd_im_bias,    0, "set IM bias",            "<ch> <V>"},
+  {0}};
+
 
 cmd_info_t dbg_cmds_info[]={
   {"pwr",    cmd_dbg_pwr,  0, 0}, 
@@ -1116,7 +1265,7 @@ cmd_info_t lo_cmds_info[]={
   {"wl",     cmd_lo_wl,     0, "set wavelength", "nm"},  
   {0}};  
   
-const cmd_info_t cal_cmds_info[]={
+cmd_info_t cal_cmds_info[]={
   {"measdark",  cmd_cal_measdark,   0, "set dark lvl on dets", ""},
   {"norebal",   cmd_cal_norebal,    0, "turn off HDL IQ rebalance", ""},
   {0}};
@@ -1129,6 +1278,9 @@ cmd_info_t dly_cmds_info[]={
 
 cmd_info_t sync_cmds_info[]={
   {"ref",  cmd_sync_ref,   0, "h=hdr,p=pwr,r=rxclk", "h|r|p"},
+  {"sweep", cmd_sync_sweep, 0, "sweep sync2rx for alice", 0},
+  {"tsweep", cmd_sync_tsweep, 0, "sweep hdr thresh", 0},
+  {"dbg",  cmd_sync_dbg, 0, "dbg sync stat",0},
   {"stat", cmd_sync_stat,  0, "view sync status", 0},
   {"add",  cmd_sync_add,   0, "add to sync dly", "<asamps>"},
   {"dly",  cmd_sync_dly,   0, "set sync dly",  "<asamps>"},
@@ -1140,13 +1292,12 @@ cmd_info_t cmds_info[]={
   {"always",  cmd_always,   0, "0|1"},
   {"cal",     cmd_subcmd, cal_cmds_info, 0, 0},
   {"circ",    cmd_circ,   0,   "0|1"},
-  {"ciph",    cmd_ciph,   0,      0},
   {"dbg",     cmd_subcmd, dbg_cmds_info, 0, 0},
   {"lo",      cmd_subcmd, lo_cmds_info, 0, 0},
   {"dly",     cmd_subcmd, dly_cmds_info, 0, 0},
   {"help",    help,       0, 0},
   {"pm_dly",  cmd_pm_dly, 0, 0},
-  {"phest",  cmd_phest,  0, "set auto phase est0", "0|1"}, 
+  {"phest",   cmd_phest,  0, "set auto phase est0", "0|1 <deg>"}, 
   {"im_dly",  cmd_im_dly, 0, 0}, 
   {"pm_sin",  cmd_pm_sin, 0, 0}, 
   {"init",    cmd_init,   0, "initializes HDL"}, 
@@ -1193,7 +1344,7 @@ int main(int argc, char *argv[]) {
   if (e) tty0_p=0;
   e = ini_get_string(vars_cfg_all,"tty1", &tty1_p);
   if (e) tty1_p=0;
-  printf("tty0 %s\n", tty0_p);
+  // printf("tty0 %s\n", tty0_p);
   if (qregs_init(tty0_p, tty1_p)) err("qregs fail");
   ini_free(vars_cfg_all);
 

@@ -16,7 +16,7 @@ static char qna_cmd[CMD_LEN];
 static char qna_rsp[CMD_LEN];
 char qna_errmsg[CMD_LEN];
 
-int qna_dbg=1;
+int qna_dbg=0;
 
 
 int qna_err(int e, char *msg) {
@@ -76,7 +76,7 @@ int qna_do_cmd_get_num(int ser_sel, double *d) {
 int qna_do_cmd_get_int(int ser_sel, int *d) {
   int e;
   e = qna_do_cmd(ser_sel);
-  if (e) return QREGS_ERR_TIMO;
+  if (e) return e; //QREGS_ERR_TIMO;
   e = sscanf(qna_rsp,"%d", d);
   if (e!=1) return
     qregs_err(QREGS_ERR_FAIL, "qna did not provide integer respose");
@@ -130,6 +130,7 @@ int qna_get_qna_settings(qregs_lo_settings_t *set) {
   // box1
   strcpy(qna_cmd, "set\r");
   e = qna_do_cmd(QREGS_SER_SEL_QNA1);
+  // printf("\nqna1: set rsp: ");  u_print_all(qna_rsp);  printf("\n");
   if (e) e1=e;
   else {
     e = qregs_findkey_int(qna_rsp, "gas goal", &set->gas_goal_offset_MHz);
@@ -142,6 +143,17 @@ int qna_get_qna_settings(qregs_lo_settings_t *set) {
     e = qregs_findkey_dbl(qna_rsp, "voa 2",
 			  &st.voa_attn_dB[QREGS_VOA_HYB_RX]);
     if (e) e1=e;
+
+    e = qregs_findkey_int(qna_rsp, "opsw 1",
+			  &st.opsw_cross[QREGS_OPSW_L]);
+    if (e) e1=e;
+    e = qregs_findkey_int(qna_rsp, "opsw 2",
+			  &st.opsw_cross[QREGS_OPSW_RX2]);
+    if (e) e1=e;
+    e = qregs_findkey_int(qna_rsp, "opsw 3",
+			  &st.opsw_cross[QREGS_OPSW_RX1]);
+    if (e) e1=e;
+    
   }
   
   strcpy(qna_cmd, "cfg it set\r");
@@ -176,15 +188,6 @@ int qna_get_qna_settings(qregs_lo_settings_t *set) {
 			  &st.voa_attn_dB[QREGS_VOA_QUANT_RX]);
     if (e) e1=e;
     
-    e = qregs_findkey_dbl(qna_rsp, "opsw 1",
-			  &st.opsw_cross[QREGS_OPSW_L]);
-    if (e) e1=e;
-    e = qregs_findkey_dbl(qna_rsp, "opsw 2",
-			  &st.opsw_cross[QREGS_OPSW_RX2]);
-    if (e) e1=e;
-    e = qregs_findkey_dbl(qna_rsp, "opsw 3",
-			  &st.opsw_cross[QREGS_OPSW_RX1]);
-    if (e) e1=e;
   }
   return e1;
 }
@@ -260,10 +263,10 @@ int qna_voa_idx_to_board(int v_i, int *brd_i, int *bv_i) {
   if ((v_i<0) || (v_i>=QREGS_NUM_VOA))
     return qregs_err(QREGS_ERR_PARAM,"bad voa idx");
   if (v_i<3) {
-    *brd_i=0;
+    *brd_i=QREGS_SER_SEL_QNA1;
     *bv_i=v_i;
   }else {
-    *brd_i=1;
+    *brd_i=QREGS_SER_SEL_QNA2;
     *bv_i=v_i-3;
   }
   return 0;
@@ -282,10 +285,10 @@ int qna_set_voa_attn_dB(int voa_i, double *dBm) {
   return 0;
 }
 
-int qna_opsw_idx_to_board(int sw_i, int *brd_i, int *bsw_i) {
+int qna_opsw_idx_to_board(int sw_i, int *ser_sel, int *bsw_i) {
   if ((sw_i<0) || (sw_i>=QREGS_NUM_OPSW))
     return qregs_err(QREGS_ERR_PARAM, "bad opsw idx");
-  *brd_i=0;
+  *ser_sel=QREGS_SER_SEL_QNA1;
   *bsw_i=sw_i;
   return 0;
 }
@@ -294,10 +297,12 @@ int qna_set_opsw(int sw_i, int *cross) {
   int e, brd_i, bsw_i, rval;
   e=qna_opsw_idx_to_board(sw_i, &brd_i, &bsw_i); // validates v_i
   if (e) return e;
+  // printf("brd %d bsw %d\n", brd_i, bsw_i);
   // qna indexes are base 1
-  sprintf(qna_cmd, "opsw %d %.2lf\r", bsw_i+1, *cross);
-  e = qna_do_cmd_get_num(brd_i, &rval);
+  sprintf(qna_cmd, "opsw %d %d\r", bsw_i+1, *cross);
+  printf("DBGOP: %s\n", qna_cmd);
+  e = qna_do_cmd_get_int(brd_i, &rval);
   if (e) return e;
-  st.opsw_cross[sw_i]=*rval;
+  st.opsw_cross[sw_i]=rval;
   return 0;
 }

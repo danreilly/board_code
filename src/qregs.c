@@ -17,6 +17,7 @@
 #include "h.h"
 #include "rp.h"
 #include "hdl.h"
+#include <stdint.h>
 
 // constants for register fields (H_*) are defined in this file:
 #include "h_vhdl_extract.h"
@@ -50,6 +51,7 @@ char *qregs_errs[] = {"", "fail", "timeout", "bug","param"};
 
 int  qregs_lasterr=0;
 char qregs_errmsg[QREGS_ERRMSG_LEN];
+
 
 qregs_st_t st={0};
 
@@ -90,10 +92,13 @@ char *qregs_err2str(int e){
   return qregs_errs[e];
 }
 
+char *qregs_last_errmsg(void) {
+  return qregs_errmsg;
+}
+
 void qregs_print_last_err(void) {
   printf("ERR: %s: %s\n", qregs_err2str(qregs_lasterr), qregs_errmsg);
 }
-
 
 
 
@@ -181,6 +186,7 @@ int qregs_block_until_tx_rdy(void) {
   struct pollfd fds = {
     .fd     = st.uio_fd,
     .events = POLLIN};
+  if (h_r_fld(H_DAC_STATUS_SER_TX_MT)) return 0;
   // enable an interrut when tx fifo is empty
   //  printf("DBG: tx block (timo_ms %d, POLLIN %d)\n", st.ser_state.timo_ms,POLLIN);
   h_w_fld(H_DAC_CTL_SER_TX_IRQ_EN, 1);
@@ -201,9 +207,13 @@ int qregs_block_until_tx_rdy(void) {
 
 int qregs_ser_sel(int sel) {
   int e;
+  printf("DBG1: qregs_ser_sel %d (tx_mt %d tx_full %d)\n", sel,
+	 h_r_fld(H_DAC_STATUS_SER_TX_MT),
+	 h_r_fld(H_DAC_SER_TX_FULL));
   if (sel!=st.ser_state.sel) {
     // kludgey... need to add HDL support for this.
     e=qregs_block_until_tx_rdy();
+    printf("DBG1: tx_rdy\n");
     if (e) return e;
     while (1) {
       if (h_r_fld(H_DAC_STATUS_SER_TX_MT)) break;
@@ -211,6 +221,9 @@ int qregs_ser_sel(int sel) {
     }
     usleep(500);
     h_w_fld(H_DAC_PCTL_SER_SEL, sel);
+    printf("DBG1: qregs_ser_sel %d  still ??? (tx_mt %d full %d)\n", sel,
+	   h_r_fld(H_DAC_STATUS_SER_TX_MT),
+	   h_r_fld(H_DAC_SER_TX_FULL));
     st.ser_state.sel=sel;
   }
   return 0;
@@ -231,8 +244,12 @@ char ser_rx(void) {
 
 void ser_tx(char c) {
   int v;
+  printf("DBG: tx %c\n", c);
   v = h_r(H_DAC_SER);
-  if (h_ext(H_DAC_SER_TX_FULL, v)) return;
+  if (h_ext(H_DAC_SER_TX_FULL, v)) {
+    printf("WARN: ser tx ovf!\n");
+    return;
+  }
   v = h_ins(H_DAC_SER_TX_DATA, v, c);
   // printf("ser w x%02x\n", h_ins(H_DAC_SER_TX_W, v, 1));
   h_w(H_DAC_SER, h_ins(H_DAC_SER_TX_W, v, 1));
@@ -244,9 +261,15 @@ int qregs_ser_tx(char c) {
   int v,i,e=1;
   uint32_t u32;
   ssize_t sz;
-  if (st.uio_fd<0)
+  
+
+  if (st.uio_fd<0) {
+    printf("DBG: fd not open\n");
     return qregs_err_fail("qregs_ser_tx: uio not open");
+  }
+  printf("DBG: qregs_ser_tx(%c)\n", c);
   if (!h_r_fld(H_DAC_SER_TX_FULL)) {
+    printf("DBG: txing\n");
     ser_tx(c);
     return 0;
   }
@@ -317,8 +340,8 @@ void qregs_ser_set_params(int *baud_Hz, int parity, int en_xonxoff) {
   // printf("DBG: baud actually %d\n", *baud_Hz);
   h_w_fld(H_DAC_SER_PARITY, parity);
   h_w_fld(H_DAC_SER_XON_XOFF_EN, en_xonxoff);
-  // h_pulse_fld(H_DAC_SER_RST); // not needed but ok.
   h_pulse_fld(H_DAC_SER_SET_PARAMS);
+  h_pulse_fld(H_DAC_SER_RST); // actually still needed but ok.
 }
 
 int qregs_ser_rx_buf_til_term(char *buf, int nchar, int *rxed) {
@@ -463,14 +486,43 @@ int qregs_set_tx_go_condition(char r) {
   return 0;
 }
 
+static int gcd(int a, int b) {
+  return (b == 0) ? a : gcd(b, a % b);
+}
+static int lcm(int a, int b) {
+  return a*b/gcd(a,b);
+}
+
+
+int set_ext_frame_pd(int frame_pd_cycs) {
+  int j;
+  // Our SFP rxclk is 30.8333MHz, so its period is 10 ADC clk cycles.
+  // Then the "ext" frame period, which is the reference to the
+  // synchronizer, should be the LCM(10,frame_pd_cycs).
+  j=lcm(10,frame_pd_cycs);
+  if ((j&H_2VMASK(H_ADC_CTL2_EXT_FRAME_PD_MIN1_CYCS))!=j) {
+    // it wont fit
+    sprintf(qregs_errmsg, "frame period %d not allowed with recovered clk", frame_pd_cycs);
+    return QREGS_ERR_FAIL;
+  }
+  h_w_fld(H_ADC_CTL2_EXT_FRAME_PD_MIN1_CYCS, j-1);
+  printf("DBG: ext_frame_pd_cycs %d\n", j);
+  return 0;
+}
+
+
 int qregs_set_sync_ref(char s) {
   // s: 'r'=sync using SFP rxclk
   //    'p'=sync using optical power-above-thresh events
   //    'h'=sync to arrival of headers
   //    't'=sync to fixed dly after tx (used by bob)
-  int i;
+  int i,e;
   switch(s) {
-    case 'r': i=H_SYNC_REF_RXCLK; break;  // 0
+    case 'r':
+      e=set_ext_frame_pd(st.frame_pd_asamps/4);
+      if (e) return e;
+      i=H_SYNC_REF_RXCLK;  // 0
+      break;
     case 'p': i=H_SYNC_REF_PWR;   break; // 1
     case 'h': i=H_SYNC_REF_CORR;  break; // 2
     case 't': i=H_SYNC_REF_TXDLY; break; // 3
@@ -524,10 +576,11 @@ int qregs_measure_frame_pwrs(qregs_frame_pwrs_t *pwrs) {
   e1=rp_get_status(&status);
   pwrs->ext_rat_dB  = status.ext_rat_dB;
   pwrs->body_rat_dB = status.body_rat_dB;
-  pwrs->body_pwr_V  = status.body_pwr_mV;  
-  pwrs->dark_pwr_V  = status.dark_pwr_mV;  
+  pwrs->body_pwr_V  = status.body_pwr_V;  
+  pwrs->dark_pwr_V  = status.dark_pwr_V;  
   return e || e1;
 }
+
 
 int qregs_rp_info(char *str, int strlen) {
   return rp_info(str, strlen);
@@ -581,6 +634,24 @@ void qregs_get_version(qregs_version_info_t *ver) {
   st.ver_info = *ver;
 }
 
+
+
+int qregs_get_hdr_detection_stats(int *hdr_cnt, int *mag_tot) {
+  int v, i;
+  h_pulse_fld(H_ADC_PCTL_PROC_STAT_MAG_CLR);
+  for(i=0;i<40;++i) {
+    h_w_fld(H_ADC_CSTAT_PROC_SEL, 10);
+    v = h_r_fld(H_ADC_CSTAT_PROC_DOUT);
+    if ((v>>31)&1) break;
+    usleep(100);
+  }
+  if (!((v>>31)&1)) return QREGS_ERR_TIMO;
+  *mag_tot  = (v>>10)&0x1fffff;
+  *hdr_cnt  = v&0x3ff;
+  return 0;
+}
+
+
 void qregs_get_hdl_settings(void) {
   int i;
   char c;
@@ -591,6 +662,7 @@ void qregs_get_hdl_settings(void) {
   st.tx_indefinite = h_r_fld(H_DAC_CTL_TX_INDEFINITE);
   st.tx_mem_circ   = h_r_fld(H_DAC_CTL_MEMTX_CIRC);
   st.tx_same_hdrs  = h_r_fld(H_DAC_HDR_SAME);
+  st.tx_same_cipher = h_r_fld(H_DAC_CIPHER_SAME);
   st.tx_hdr_twopi  = h_r_fld(H_DAC_HDR_TWOPI);
   st.tx_pilot_pm_en = !h_r_fld(H_DAC_CTL_PM_HDR_DISABLE);
   st.alice_syncing = h_r_fld(H_DAC_CTL_ALICE_SYNCING);
@@ -600,6 +672,16 @@ void qregs_get_hdl_settings(void) {
   
   st.phase_est_en  = h_r_fld(H_ADC_ACTL_PHASE_EST_EN);
 
+
+  {
+    double s, c;
+    i = h_r_signed_fld(H_ADC_REBALO_XPH_COS);
+    c = (double)i/(1<<7);
+    i = h_r_signed_fld(H_ADC_REBALO_XPH_SIN);
+    s = (double)i/(1<<7);
+    st.xph_deg = atan2(s, c)*180/M_PI;
+  }
+  
   
   st.decipher_en   = h_r_fld(H_ADC_ACTL_DECIPHER_EN);
   st.is_bob        = h_r_fld(H_DAC_CTL_IS_BOB);
@@ -689,29 +771,40 @@ void qregs_get_hdl_settings(void) {
   st.ser_state.xon_xoff_en = h_r_fld(H_DAC_SER_XON_XOFF_EN);
   st.ser_state.timo_ms = 4000;
   st.ser_state.term = '>';
+
+  // TODO: complete after ser link works again
+  //qregs_lo_settings_t set;
+  //qna_get_qna_settings(&set);  
 }
 
 void qregs_set_phase_est_en(int en, double offset_deg) {
-  int i=!!en;
+  int i;
   double c, s;
+  
+  en=!!en;
+  if (!en)
+    offset_deg=0;
+    
   c = cos(offset_deg*M_PI/180);
-  // printf("c %g -> %g\n", c, c*(1<<7));
   i = round(c*(1<<7));
+  printf("cos(%.1f)=%g -> %d\n", offset_deg, c, i);
   i = h_w_signed_fld(H_ADC_REBALO_XPH_COS, i);
   c = (double)i/(1<<7);
   
 
   s=sin(offset_deg*M_PI/180);
   i = round(s*(1<<7));
+  printf("sin(%.1f)=%g -> x%x\n", offset_deg, s, i);
   i = h_w_signed_fld(H_ADC_REBALO_XPH_SIN, i);
-  //  printf("1 %d  x%x\n", i, i);
   s = (double)i/(1<<7);
 
   offset_deg = atan2(s, c)*180/M_PI;
-  printf("offset %.1f\n", offset_deg);
-  
-  h_w_fld(H_ADC_ACTL_PHASE_EST_EN, i);
-  st.phase_est_en = i;
+  st.xph_deg = offset_deg;
+  printf("actually %.1f\n", offset_deg);
+
+  h_w_fld(H_ADC_ACTL_PHASE_EST_EN, en);
+  st.phase_est_en = en;
+  st.xph_deg = offset_deg;
 }
 
 int qregs_get_qna_settings(qregs_lo_settings_t *set) {
@@ -750,14 +843,22 @@ char *qregs_go_cond_ctos(char c) {
 
 char *qregs_voa_name[]={"qtx","hrx","datatx","datarx","qrx"};
 
-char *qregs_opsw_name[]={"lpbk","rx1","rx2"};
+char *qregs_opsw_name[]={"lpbk","rx2","rx1"};
 
 void qregs_print_settings(void) {
   int i;
   printf("halfduplex_is_bob %d\n", st.is_bob);
-  printf("DLYS:  pm_dly_cycs %d   \tim_dly_cycs %d\n", st.pm_dly_cycs, st.hdr_im_dly_cycs);
-  printf("       round_trip_asamps %d\n", st.round_trip_asamps);
-  printf("       rx_subcyc_dly_asamps %d\n", h_r_fld(H_ADC_ACTL_SAMP_DLY_ASAMPS));
+
+
+
+  printf("DLYS:  pm_dly_cycs %d   \tim_dly_cycs %d\n",
+	 st.pm_dly_cycs, st.hdr_im_dly_cycs);
+  printf("       dly round %d \t(round_trip_asamps)\n", st.round_trip_asamps);
+  printf("       dly rxsc  %d \t(rx_subcyc_dly_asamps)\n", h_r_fld(H_ADC_ACTL_S\
+AMP_DLY_ASAMPS));
+  printf("       dly rx2tx %d \t(rx2tx_dly_asamps)\n", st.rx2tx_dly_asamps);
+  
+
   printf("tx_go_condition %c=%s\n",
 	 st.tx_go_condition,
 	 qregs_go_cond_ctos(st.tx_go_condition));
@@ -777,7 +878,7 @@ void qregs_print_settings(void) {
   printf("alice_syncing %d   \talice_txing %d\n", st.alice_syncing, st.alice_txing);
   printf("tx %d rx %d\n", h_r_fld(H_ADC_ACTL_TX_EN), h_r_fld(H_ADC_ACTL_RX_EN));
   printf("search %d\n", h_r_fld(H_ADC_ACTL_SEARCH));
-  printf("phase_est_en %d\n", st.phase_est_en);
+  printf("phase_est_en %d    \txph_deg %.1f\n", st.phase_est_en, st.xph_deg);
   //  printf("alice_txing %d\n", h_r_fld(H_DAC_CTL_ALICE_TXING));
   printf("  use_lfsr %d    \tlfsr_rst_st=x%x\n", st.use_lfsr, st.lfsr_rst_st);
   printf("  tx_frame_qty %d\n", st.frame_qty);
@@ -795,8 +896,9 @@ void qregs_print_settings(void) {
   printf("QSDC: data_pos %d asamps = %.3f ns\n",
 	 st.qsdc_data_cfg.pos_asamps,
 	 qregs_dur_samps2us(st.qsdc_data_cfg.pos_asamps)*1000);
-  printf("      cipher_en %d    decipher_en %d\n",
-	 st.cipher_en, st.decipher_en);
+  printf("      cipher_en %d    decipher_en %d  \tcipher_same %d\n",
+	 st.cipher_en, st.decipher_en, st.tx_same_cipher);
+
   printf("      data_len %d asamps = %.3f ns per frame\n",
 	 st.qsdc_data_cfg.data_len_asamps,
 	 qregs_dur_samps2us(st.qsdc_data_cfg.data_len_asamps)*1000);
@@ -939,7 +1041,7 @@ void qregs_set_rx2tx_dly_asamps(int dly_asamps) {
   i = (dly_asamps + 10*st.frame_pd_asamps) % st.frame_pd_asamps;
   i = i/4-1;
   //  i=h_w_fld(H_ADC_CTL3_TX_DLY_MIN1_CYCS, i);
-  st.tx2rx_dly_asamps = (i+1)*4;
+  st.rx2tx_dly_asamps = (i+1)*4;
   //  printf("DBG: tx2rx dly %d\n", st.tx2rx_dly_asamps);
 }
 
@@ -978,16 +1080,40 @@ void qregs_set_use_lfsr(int use_lfsr) {
   st.use_lfsr = i;
 }
 
-void qregs_set_cipher_en(int en, int symlen_asamps, int m) {
+void qregs_set_init(void) {
+ // Note: In HDL of 9/19, cipher prime is not
+ // dependent on cipher_en going low.  So we can
+ // just keep it high all the time, and think of it
+ // as a setting, not an action.
+  h_w_fld(H_DAC_CTL_CIPHER_EN, 0);
+  st.cipher_en = 0;
+  h_w_fld(H_ADC_ACTL_DECIPHER_EN, 0);
+  st.decipher_en = 0;
+  
+}
+
+
+// TODO: Merge with qsdc_data_cfg and qregs_set_cipher_en,
+//       and make this a sort of lower-level non-user cfg function
+void qregs_qsdc_cipher_cfg(int symlen_asamps, int m, int dbg_cipher_same) {
+  // usually decipher_en=cipher_en.
   int i;
   int l2m = round(log2(m));
   i = h_w_fld(H_DAC_CIPHER_SYMLEN_MIN1_ASAMPS, symlen_asamps-1);
   st.cipher_symlen_asamps = i+1;
   l2m = h_w_fld(H_DAC_CIPHER_M_LOG2, l2m);
   st.cipher_m = 1<<l2m;
-  i=!!en;
-  h_w_fld(H_DAC_CTL_CIPHER_EN, i);
-  st.cipher_en = i;
+
+  int i = !!dbg_cipher_same;
+  h_w_fld(H_DAC_CIPHER_SAME, i);
+  st.tx_same_cipher = i;
+
+  
+  //..  i=!!en;
+  //  h_w_fld(H_DAC_CTL_CIPHER_EN, i);
+  //  st.cipher_en = i;
+  //  i = h_w_fld(H_ADC_ACTL_DECIPHER_EN, decipher_en);
+  //  st.decipher_en = i;
 }
 
 
@@ -1023,11 +1149,6 @@ void qregs_set_tx_same_hdrs(int same) {
   st.tx_same_hdrs = i;
 }
 
-void qregs_set_tx_same_cipher(int same) {
-  int i = !!same;
-  h_w_fld(H_DAC_CIPHER_SAME, i);
-  st.tx_same_cipher = i;
-}
 
 void qregs_set_tx_hdr_twopi(int en) {
   int i = !!en;
@@ -1060,6 +1181,27 @@ void qregs_set_save_after_hdr(int en) {
 
 void qregs_set_alice_txing(int en) {
   h_w_fld(H_DAC_CTL_ALICE_TXING, en);
+}
+
+
+void qregs_qsdc_other_cfg(qregs_qsdc_other_cfg_t *oth) {
+  int i;
+
+  i = h_w_fld(H_DAC_CTL_CIPHER_EN, oth->cipher_en);
+  st.cipher_en = i;
+  i = h_w_fld(H_ADC_ACTL_DECIPHER_EN, oth->decipher_en);
+  st.decipher_en = i;
+
+  int l2m = round(log2(oth->m));
+  i = h_w_fld(H_DAC_CIPHER_SYMLEN_MIN1_ASAMPS, oth->cipher_symlen_asamps-1);
+  st.cipher_symlen_asamps = i+1;
+  l2m = h_w_fld(H_DAC_CIPHER_M_LOG2, l2m);
+  st.cipher_m = 1<<l2m;
+
+  i = oth->dbg_cipher_same;
+  h_w_fld(H_DAC_CIPHER_SAME, i);
+  st.tx_same_cipher = i;
+
 }
 
 int qregs_set_qsdc_data_cfg(qregs_qsdc_data_cfg_t *data_cfg) {
@@ -1177,7 +1319,7 @@ void qregs_set_cdm_en(int en) {
 }
 
 
-void qregs_set_cdm_cfg(hdl_cdm_cfg_t *cdm_cfg, ssize_t *rx_buf_sz_bytes) {
+void qregs_set_cdm_cfg(hdl_cdm_cfg_t *cdm_cfg, size_t *rx_buf_sz_bytes) {
 // caller need not set num_passes or qty to tx
   int i, probes_per_frame;
   hdl_cdm_cfg_t *p=&st.cdm_cfg;
@@ -1224,52 +1366,33 @@ void qregs_set_cdm_cfg(hdl_cdm_cfg_t *cdm_cfg, ssize_t *rx_buf_sz_bytes) {
 }
 
 
-//void qregs_set_cdm_frame_pd_asamps(int frame_pd_asamps) {
-//  int i = frame_pd_asamps/4-1;
-//  // These two regs always set the same.
-//  // actually write num cycs-1 (at fsamp/4=308MHz)
-//  i = h_w_fld(H_DAC_FR1_FRAME_PD_MIN1, i);
-//  i = h_w_fld(H_ADC_FR1_FRAME_PD_MIN1, i);
-//  st.frame_pd_asamps = (i+1)*4;
-//  st.setflags |= 2;
-//}
 
-void qregs_set_frame_pd_asamps(int frame_pd_asamps) {
+
+int qregs_set_frame_pd_asamps(int frame_pd_asamps) {
 // inputs:
 //       frame_pd_asamps: requested frame period in units of ADC/DAC samples.
 // call this BEFORE qregs_set_hdr_len_bits
-// NOTE: Calling code should NOT try to make probe_pd_samps
-//       conform to any restriction, such as being a multiple
-//       of 16 or 10.  In particular, the true restriction depends
-//       on the hardware implementation of the recovered clock from
-//       the SFP, which calling code should not have to anticipate.
-//       Qregs will choose the closeset frame period it can implement.
-//       Calling code can check st.frame_pd_asamps to see what
-//       the new effective frame period is.
-  int i, j;
+  int i, j, e;
   if (st.setflags&1 != 1)
-    printf("BUG: call set_osamp before set_frame_pd_asamps\n");
+    return qregs_err_bug("call set_osamp before set_frame_pd_asamps");
 
   i = frame_pd_asamps/4;
-  // When SFP rxclk is 30.8333MHz, frame len must be mult of 10
-  // if rxclk were different, other frame lens are possible.
-  // Even at 30.83333, multiples other than 10 could be possible
-  // by increasing the complexity of the HDL, but lets not go
-  // there now.
-  i=(int)((i+5)/10)*10-1;
+
+  if (st.sync_ref=='r') {
+    e=set_ext_frame_pd(i);
+    if (e) return e;
+  }
 
   // These two regs always set the same.
   // actually write num cycs-1 (at fsamp/4=308MHz)
+  i=i-1;
   i = h_w_fld(H_DAC_FR1_FRAME_PD_MIN1, i);
   i = h_w_fld(H_ADC_FR1_FRAME_PD_MIN1, i);
   st.frame_pd_asamps = (i+1)*4;
   st.setflags |= 2;
-
-  // sfp rxclk is 1/10th of dac clk
-  j =  ((i+1)/10)-1;
-  h_w_fld(H_ADC_CTL2_EXT_FRAME_PD_MIN1_CYCS, j);
-  printf("DBG: ext_frame_pd_cycs %d\n", j+1);
+  return 0;
 }
+
 
 void qregs_get_avgpwr(int *avg, int *mx, int *cnt) {
   // cnt: pwr event count
@@ -1607,6 +1730,9 @@ void qregs_set_osamp(int osamp) {
 
 int qregs_cfg_pilot(qregs_pilot_cfg_t *cfg, int autocalc_body_im) {
   int i;
+
+  // TODO: set SIMPLE_IM_HDR_EN if using simple pilot.
+  //       however, we may never use it anyway.
   i = h_w_signed_fld(H_DAC_IM_HDR, cfg->im_simple_pilot_dac);
   cfg->im_simple_pilot_dac = i;
 
@@ -1638,6 +1764,7 @@ int qregs_cfg_pilot(qregs_pilot_cfg_t *cfg, int autocalc_body_im) {
 
 
 
+// search_en is being PHASED OUT
 void qregs_search_en(int en) {
   int i = !!en;
   h_w_fld(H_ADC_ACTL_SEARCH, i);
@@ -1648,15 +1775,24 @@ void qregs_set_memtx_to_pm(int en) {
   h_w_fld(H_DAC_CTL_MEMTX_TO_PM, i);
 }
 
-void qregs_search_and_txrx(int en) {
+// DEPRECATED
+// search_en is being PHASED OUT
+void qregs_search_and_txrx(int search_en, int en) {  
   int v = h_r(H_ADC_ACTL);
-  v = h_ins(H_ADC_ACTL_SEARCH,  v, en);
+  v = h_ins(H_ADC_ACTL_SEARCH,  v, search_en);
   v = h_ins(H_ADC_ACTL_TX_EN, v, en);
   v = h_ins(H_ADC_ACTL_RX_EN, v, en);
   h_w(H_ADC_ACTL, v);
 }
 
+void qregs_txrx_new(int tx_en, int rx_en) {
+  int v = h_r(H_ADC_ACTL);
+  v = h_ins(H_ADC_ACTL_TX_EN, v, tx_en);
+  v = h_ins(H_ADC_ACTL_RX_EN, v, rx_en);
+  h_w(H_ADC_ACTL, v);
+}
 
+// DEPRECATED
 void qregs_txrx(int en) {
   // desc: we only take ADC samples, and transmit DAC samps,
   //       while txrx is high.
@@ -1708,6 +1844,23 @@ void qregs_qsdc_track_pilots(int en) {
 
 
 
+int qregs_meas_pwr_hist(int ch, qregs_pwr_hist_t *hist) {
+// ch: 0 =after first IM, 1=after second IM
+  int e, e1, i;
+  rp_hist_t rphist;
+  e = rp_cfg_frames(st.frame_pd_asamps, st.hdr_len_asamps);
+  e1 = rp_meas_pwr_hist(ch, &rphist);
+  hist->pilot_pwr_V = rphist.pilot_pwr_V;
+  hist->mean_pwr_V  = rphist.mean_pwr_V;
+  hist->body_pwr_V  = rphist.body_pwr_V;  
+  hist->dark_pwr_V  = rphist.dark_pwr_V;
+  hist->ext_rat_dB  = rphist.ext_rat_dB;
+  hist->body_rat_dB = rphist.body_rat_dB;
+  // TODO: use beter way
+  for(i=0;i<64;++i)
+    hist->bins[i]=rphist.bins[i];
+  return e || e1;
+}
 
 
 

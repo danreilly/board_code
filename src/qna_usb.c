@@ -177,7 +177,7 @@ int qna_usb_connect(int idx, char *devname,  qna_set_err_fn *set_errmsg_fn) {
     sprintf(umsg, "cant open usb device %s", devname);
     RBUG(umsg);
   }
-  printf("* opened %s\n", devname);
+  // printf("* opened %s\n", devname);
   if (set_attrib(qna_fd[idx], B115200))
     RBUG("cant set serial usb port attributes");
 
@@ -186,13 +186,13 @@ int qna_usb_connect(int idx, char *devname,  qna_set_err_fn *set_errmsg_fn) {
   
   DO(qna_wr(idx, "i\r"));
   DO(qna_rd(idx, ibuf, IBUF_LEN, 1));
-  u_print_all(ibuf);
+  // u_print_all(ibuf);
   il = IBUF_LEN;
   sprintf(key, "QNA%d", idx+1);
   if (findkey(ibuf, key, irsp, &il))
     RBUG("did not iden QNA");
   
-  printf("got rsp QNA %s\n", irsp);
+  //   printf("got rsp QNA %s\n", irsp);
   return 0;
 }
 
@@ -210,7 +210,9 @@ int qna_usb_do_cmd(int idx, char *cmd, char *rsp, int rsp_len) {
   DO(tcflush(qna_fd[idx], TCIOFLUSH));
   DO(qna_wr(idx, cmd));
   //  DO(qna_wr(idx, "\r")); cmd must have \r
+  // printf("%s\n"	 , cmd);
   DO(qna_rd(idx, ibuf, 1024, qna_timo_s));
+  
   p = strstr(ibuf, "\n");
   if (p) {
     strncpy(rsp, p+1, rsp_len-1);

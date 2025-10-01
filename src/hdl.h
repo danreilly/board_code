@@ -1,11 +1,21 @@
 #ifndef _HDL_H_
 #define _HDL_H_
 
+#include <stddef.h>
+
 #define HDL_ERR_NONE   (0)
 #define HDL_ERR_PARAM_CHANGE (1)
 #define HDL_ERR_FAIL   (2)
 #define HDL_ERR_BUG    (3)
 
+
+typedef struct hdl_qsdc_cfg_st {
+  int    is_alice;
+  size_t bytes;
+  int    do_tx;
+  double est_round_trip_s;
+  char   msg_name[64]; // for test and dbg. may be "".
+} hdl_qsdc_cfg_t;
 
 
 typedef struct hdl_cdm_cfg_st {
@@ -18,18 +28,15 @@ typedef struct hdl_cdm_cfg_st {
   int num_iter;
 } hdl_cdm_cfg_t;
 
+// to determine round trip
 typedef struct hdl_loop_cfg_st {
+
 } hdl_loop_cfg_t;
 
-typedef struct hdl_qsdc_cfg_st {
-} hdl_qsdc_cfg_t;
 
 typedef struct hdl_noise_cfg_st {
 } hdl_noise_cfg_t;
 
-// calling code defines this function,
-// and tells this module to use it to post errors.
-//typedef int tsd_err_fn_t(char *msg, int errcode);
 
 
 int hdl_connect(char *hostname);

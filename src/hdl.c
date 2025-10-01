@@ -167,8 +167,11 @@ int hdl_setup(tsd_setup_params_t *params) {
   return e;
 }
 
+int hdl_cdm_cfg(hdl_cdm_cfg_t *cfg) {
+  return 0;
+}
 
-
+#if 0
 int hdl_cdm_cfg(hdl_cdm_cfg_t *cfg) {
   int e;
   hdl_cdm_cfg_t sav = *cfg;
@@ -178,7 +181,7 @@ int hdl_cdm_cfg(hdl_cdm_cfg_t *cfg) {
 	   cfg->num_iter);
   e=hdl_do_cmd(req, rsp, REQ_SZ);
 
-  tsd_parse_kval("is_passive=", &cfg->is_passive);
+  tsd_parse_key_int("is_passive=", &cfg->is_passive);
   tsd_parse_kval("is_wdm=",     &cfg->is_wdm);
 
   tsd_parse_kval("sym_len=",   &cfg->sym_len_asamps);
@@ -190,7 +193,7 @@ int hdl_cdm_cfg(hdl_cdm_cfg_t *cfg) {
       e = HDL_ERR_PARAM_CHANGE;
   return e;
 }
-
+#endif
 
 int hdl_cdm_go(void) {
   int e;

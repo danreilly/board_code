@@ -26,6 +26,7 @@ void cmd_print_errcode(int err) {
     case CMD_ERR_BAD_VAL   : cmd_print_err("bad val"); break;
     case CMD_ERR_ABORTED   : cmd_print_err("aborted"); break;
     case CMD_ERR_TIMO      : cmd_print_err("timeout"); break;
+    case CMD_ERR_BUG       : cmd_print_err("BUG"); break;
     case CMD_ERR_FAIL:
     default:            cmd_print_err("failed"); break;
   }
@@ -75,7 +76,9 @@ int cmd_help(cmd_info_t *ci_p) {
 
 int cmd_do_token(char *token, cmd_info_t *ci_p) {
   int i, j=0, l, cnt;
+  const cmd_info_t *p;
   if(!token[0]) return CMD_ERR_SYNTAX;
+  // printf("DBG: do %s\n", token);
   l = strlen(token); cnt=0;
   if ((l==1)&&(token[0]=='h'))
     return cmd_help(ci_p);
@@ -87,12 +90,13 @@ int cmd_do_token(char *token, cmd_info_t *ci_p) {
     }
   }
   if (cnt==1) {
-    i=ci_p[j].arg;
-    if (i==CMD_PERDET) {
+    p=ci_p[j].arg;
+    if (p==CMD_PERDET) {
+      // printf("perdet\n");
       if (parse_int(&i)) return CMD_ERR_NO_INT;
       if ((i<0) || (i>3)) return CMD_ERR_BAD_VAL;
     }
-    return (*ci_p[j].fn)(i);
+    return (*ci_p[j].fn)((int)p);
   }
   else if (cnt==0) return CMD_ERR_BAD_CMD;
   else             return CMD_ERR_AMBIGUOUS;
@@ -102,8 +106,11 @@ char cmd_token[512];
 
 int cmd_subcmd(int arg) {
   cmd_info_t *ci_p = (cmd_info_t *)arg;
+  // printf("subcmd\n");
   if (cmd_path[0])  strcat(cmd_path, " ");
-  strcat(cmd_path, ci_p[0].name);
+  // printf("  path '%s'\n", cmd_path);
+  strcat(cmd_path, ci_p->name);
+  // printf("  path now '%s'\n", cmd_path);
   return cmd_do_token(parse_token(cmd_token, 512), ci_p);
 }
 

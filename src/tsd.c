@@ -42,12 +42,32 @@
 #include "tsd.h"
 #include "parse.h"
 #include "util.h"
+#include "ini.h"
 
 #include <unistd.h>
 #include <linux/reboot.h>
 #include <pthread.h>
 
-extern ssize_t read_file_into_buf(char *fname, void *buf, ssize_t buf_sz);
+//extern ssize_t read_file_into_buf(char *fname, void *buf, ssize_t buf_sz);
+
+#define TSD_ERRMSG_LEN (1024)
+char tsd_errmsg[TSD_ERRMSG_LEN];
+int  tst_err;
+
+char *tsd_get_last_errmsg(void) {
+  return tsd_errmsg;
+}
+int tsd_err(int code, char *msg) {
+  if (msg!=tsd_errmsg)
+    strcpy(tsd_errmsg, msg);
+  return code;
+}
+int tsd_err_fail(char *msg) {
+  return tsd_err(HDL_ERR_FAIL, msg);
+}
+
+
+
 
 
 #define QREGD_PORT (5000)
@@ -57,10 +77,12 @@ extern ssize_t read_file_into_buf(char *fname, void *buf, ssize_t buf_sz);
   e = CALL; \
   if (e) return e; \
   }
-//static tsd_err_fn_t *tsd_err_fn;
-#define BUG(MSG)  {return QREGC_ERR_BUG;}
-//   return (*tsd_err_fn)(MSG, 
 
+
+static ini_val_t *tvars=0, *vars_cfg_all=0;
+
+
+#define IIO_ADC_MAX_ASAMPS (2<<18)
 
 
 
@@ -71,28 +93,56 @@ char rxbuf[1024]; // rx
 char txbuf[1024]; // rx
 
 tsd_state_t tsd_st={0};
+hdl_cdm_cfg_t cdm_cfg={0}; // get rid of this
+hdl_loop_cfg_t loop_cfg;//={0}; // get rid of this
+hdl_noise_cfg_t noise_cfg;//={0}; // get rid of this
+
 
 extern int iio_dly_ms; // can leave global
 
-static char tsd_errmsg[256];
-//char qna_errmsg[256];
 
-static void dbg(char *str) {
-  printf("DBG: %s\n", str);
+
+//static void dbg(char *str) {
+//  printf("DBG: %s\n", str);
+//}
+
+
+static int err(int errcode, char *msg){
+  strcpy(tsd_errmsg, msg);
+  return errcode;
 }
 
-extern void err(char *str);
-
-int err_and_msg(int err, char *msg) {
-// a convient way for cmd_* functions to return an error
+static int err_fail(char *msg){
   strcpy(tsd_errmsg, msg);
-  return err;
+  return HDL_ERR_FAIL;
 }
 
-int err_fail(char *msg) {
+static int err_bug(char *msg){
   strcpy(tsd_errmsg, msg);
+  return HDL_ERR_BUG;
+}
+
+
+// TODO: clean this up.
+// "commands" sprintf a response in cmdrsp. and return CMD_ERR*
+char cmdrsp[1024];
+char qnarsp[1024];
+int cmd_err(int code, char *msg) {
+  sprintf(qnarsp, "%d %s", code, msg);
+  return code;
+}
+int cmd_err_fail(char *msg) {
+  return cmd_err(CMD_ERR_FAIL, msg);
+}
+int cmd_err_bug(char *msg) {
+  return cmd_err(CMD_ERR_BUG, msg);
+}
+int cmd_qerr(char *msg) {
+  // command reports error from qregs  
+  sprintf(tsd_errmsg, "%s\n%s", qregs_last_errmsg(), msg);
   return CMD_ERR_FAIL;
 }
+
 
 
 int save_fd=0;
@@ -105,11 +155,69 @@ tsd_setup_params_t tsd_params={0};
 
 
 
+// Many tsd local functions and commands
+// depend on looking up default params from ini files:
+static void lookup_int(char *var_name, int *i_p) {
+  int e=ini_get_int(tvars, var_name, i_p);
+  if (e)
+    printf("WARN: %s undefined in tvars\n", var_name);
+}
+
+
+
+
+int tsd_init(void)
+{
+  int e;
+
+
+  gethostname(tsd_st.hostname, sizeof(tsd_st.hostname));
+  tsd_st.hostname[64]=0;
+  
+  e =  ini_read("tvars.txt", &tvars);
+  if (e)
+    printf("err reading tvars.txt err %d\n",e);
+
+  e =  ini_read("cfg/ini_all.txt", &vars_cfg_all);
+  if (e)
+    printf("err reading ini_all.txt err %d\n",e);
+  char *tty0_p, *tty1_p;
+  e = ini_get_string(vars_cfg_all,"tty0", &tty0_p);
+  if (e) tty0_p=0;
+  e = ini_get_string(vars_cfg_all,"tty1", &tty1_p);
+  if (e) tty1_p=0;
+
+  if (qregs_init(tty0_p,tty1_p))
+    return err_fail("qregs_init");
+
+  //  qregs_print_adc_status();   printf("\n");
+
+  return 0;
+}
+
+int tsd_done(void)
+{
+  ini_free(tvars);
+  ini_free(vars_cfg_all);
+  
+  if (qregs_done()) printf("qregs_done fail\n");
+  //    assert(zcu_xport_set_dest("169.254.135.160") == 0);
+  //    assert(zcu_xport_send(samples, 4096) == 0);
+  return 0;
+}
+
 
 int tsd_iio_create_rxbuf(lcl_iio_t *iio) {
+// This allocs ring of ADC bufs and starts RX DMA
   ssize_t rx_buf_sz_asamps, sz;
-  // This allocs ADC bufs and starts RX DMA
+
+  if (iio->adc_buf) {
+    printf("ERR: iio rxbuf already created!\n");
+    return 0;
+  }
+  
   sz = iio_device_get_sample_size(iio->adc);  // sz=4;
+  printf("adc samp sz %zd\n",sz);
   rx_buf_sz_asamps = iio->rx_buf_sz_bytes / sz;
   printf("create rx bufs sz %zd bytes\n", iio->rx_buf_sz_bytes);
   iio->adc_buf = iio_device_create_buffer(iio->adc,
@@ -126,255 +234,7 @@ int tsd_iio_create_rxbuf(lcl_iio_t *iio) {
 void tsd_iio_destroy_rxbuf(lcl_iio_t *iio) {
   printf("iio_buffer_destroy(adc)\n");  
   iio_buffer_destroy(iio->adc_buf);
-}
-
-
-
-// This might run on local or remote.
-int tsd_first_action(tsd_setup_params_t *params, lcl_iio_t *iio) {
-  int num_dev, i, j, k, n, e;
-  char name[32], attr[32], c;
-  ssize_t sz, tx_sz, sz_rx;
-  const char *r;
-  ssize_t left_sz, mem_sz;
-  double x, y;
-  
-  // cat iio:device3/scan_elements/out_voltage0_type contains
-  // le:s15/16>>0 so I think it's short int.  By default 1233333333 Hz
-  short int mem[4096*2];
-  //  short int rx_mem_i[ADC_N], rx_mem_q[ADC_N]; 
-
-
-  int p_i;
-  double d;
-  long long int ll;
-
-  int use_lfsr=1;
-  //  int  hdr_preemph_en=0;
-
-  char data_fname[256];
-  int tx_always=0;
-  int tx_0=0;
-  int max_frames_per_buf;
-
-
-
-
-  tx_0 = (params->mode=='n');
-  qregs_set_meas_noise(params->mode=='n');
-
-  use_lfsr = 1;
-  qregs_set_use_lfsr(use_lfsr);
-
-
-  qregs_set_save_after_init(0);
-  qregs_set_save_after_pwr(0);
-  qregs_set_save_after_hdr(0);
-
-
-  //  qregs_set_tx_always(0); // set for real further down.
-  qregs_search_en(0); // recover from prior crash if we need to.
-  qregs_txrx(0);
-
-  
-  qregs_set_cipher_en(0, st.osamp, 2);
-  qregs_set_tx_pilot_pm_en(!tx_0);
-  qregs_set_alice_txing(0);
-  qregs_get_avgpwr(&i,&j,&k); // just to clr ADC dbg ctrs
-
- 
-  if (params->is_alice) {
-    qregs_sync_status_t sstat;
-    qregs_get_sync_status(&sstat);
-    if (!sstat.locked)
-      return err_fail("synchronizer unlocked");
-  }
-
-  qregs_set_tx_same_hdrs(params->mode != 'c');
-
-
-  if (params->is_alice) {
-    qregs_set_save_after_hdr(1);
-    qregs_set_alice_syncing(params->alice_syncing);
-  }else { // not alice
-    qregs_set_alice_syncing(0);
-  }
-  
-  // qregs_set_sync_ref('p'); // ignored if bob
-  //  qregs_sync_resync();
-
-  
-  char cond;
-  if (params->is_alice)
-    if (!params->alice_txing && !params->alice_syncing)
-      cond='r';
-    else
-      cond='h';
-  else
-    cond='r'; // r=tx when rxbuf rdy
-  qregs_set_tx_go_condition(cond);
-  printf(" using tx_go condition %c\n", st.tx_go_condition);
-
-#if 0  
-  if (0) { // suppose thresh already set
-    i=j=k=0;
-    lookup_int("init_pwr_thresh", &i);
-    qregs_dbg_set_init_pwr(i);
-    // printf("  init_pwr_thresh %d\n", st.init_pwr_thresh);
-    lookup_int("hdr_pwr_thresh", &j);
-    lookup_int("hdr_corr_thresh",&k);
-    qregs_set_hdr_det_thresh(j, k);
-    //  printf("  pilot_pwr_thresh %d\n", st.hdr_pwr_thresh);
-    // printf("  pilot_corr_thresh %d\n", st.hdr_corr_thresh);
-  }
-#endif  
-
-  // This does not determine number of frames
-  // alice inserts into during QSDC.
-  qregs_set_frame_qty(params->frame_qty_to_tx);
-  if (st.frame_qty !=params->frame_qty_to_tx) {
-    printf("ERR: actually frame qty %d not %d\n", st.frame_qty,
-	   params->frame_qty_to_tx);
-  }
-
-  
-  //  sz = iio_device_get_sample_size(dac);
-  // DAC sample size is 2 bytes per channel.  if 2 chans enabled, sz is 4.
-  //  printf("dac samp size %zd\n", sz);
-
-
-  // in half-duplex FPGA, alice can't store IM in mem
-
-  //  st.pilot_cfg.im_from_mem = hdr_preemph_en;
-  //  qregs_cfg_pilot(&st.pilot_cfg, 0);
-
-
-
-  // IIO provides iio_channel_convert_inverse(dac_ch0,  dst, mem);
-  // but for dac3 zcu106 basically there is no conversion
-
-  // sys/module/industrialio_buffer_dma/paraneters/max_bloxk_size is 16777216
-  // iio_device_set_kernel_buffers_count(?
-  //  i = iio_device_get_kernel_buffers_count(dev);
-  //  printf("num k bufs %d\n", i);
-  
-
-
-  // ini_write("tvars.txt", tvars);
-
-  
-  if (params->opt_save) {
-    save_fd = open("out/d.raw", O_CREAT | O_WRONLY | O_TRUNC, S_IRWXO);
-    if (save_fd<0) return err_fail("cant open d.txt");
-  }
-
-  memset(mem, 0, sizeof(mem));
-  mem_sz=0;
-  if (!mem_sz && params->is_alice && params->alice_txing) {
-    strcpy(data_fname, "src/data.bin");
-    //           ask_str("data_file", "data_file","src/data.bin"));
-    mem_sz = read_file_into_buf(data_fname, mem, sizeof(mem));
-
-    int data_len_syms = (int)mem_sz * 8 / (st.qsdc_data_cfg.is_qpsk?2:1) *
-      st.qsdc_data_cfg.bit_dur_syms;
-    printf("total data len %d symbols", data_len_syms);
-    int data_len_frames = (int)ceil((double)data_len_syms
-				    * st.qsdc_data_cfg.symbol_len_asamps
-				    / st.qsdc_data_cfg.data_len_asamps);
-    printf("   =  %d frames\n", data_len_frames);
-
-    if (mem_sz>0) {
-      // printf("DBG: per-chan step %zd\n", iio_buffer_step(dac_buf));  
-      void *p;
-      p = iio_buffer_start(iio->dac_buf);
-      if (!p) err("no buffer yet");
-      memcpy(p, mem, mem_sz);
-      // sz = iio_channel_write(dac_ch0, dac_buf, mem, mem_sz);
-      // returned 256=DAC_N*2, makes sense
-      printf("  filled dac_buf sz %zd bytes\n", mem_sz);
-    }
-  }
-
-
-  //  qregs_set_tx_always(tx_always);
-
-  if (iio->num_iter) {
-    if (times_s) free(times_s);
-    times_s = (int *)malloc(sizeof(int)*iio->num_iter);
-  }
-  
-  if (params->opt_corr) {
-    sz = sizeof(double) * st.frame_pd_asamps;
-    printf("frame_pd_asamps %d\n", st.frame_pd_asamps);
-    // printf("will init size %zd  dbg %zd\n", sz, sizeof(double));
-    if (corr) free(corr);
-    corr = (double *)malloc (sz);
-    if (!corr) err("cant malloc");
-    memset((void *)corr, 0, sz);
-    corr_init(st.hdr_len_bits, st.frame_pd_asamps);
-  }
-
-  // TODO: make cipher prime NOT be dependent on cipher_en
-  // going low.  Then we can just keep it high all the time.
-  qregs_set_cipher_en(params->cipher_en, st.osamp, 2);
-
-  
-
-  // sinusoid before willpush    
-  //    prompt("will push");
-  if (mem_sz) {
-    size_t data_sz_samps;
-
-    qregs_zero_mem_raddr();
-
-    // set_blocking_mode(iio->dac_buf, true); // default is blocking.
-
-    sz = iio_device_get_sample_size(iio->dac);
-    data_sz_samps = (int)(mem_sz/sz);
-    tx_sz = iio_buffer_push_partial(iio->dac_buf, data_sz_samps); // supposed to ret num bytes
-    printf("  pushed %zd bytes\n", tx_sz);
-
-    // This problem is solved
-    i = mem_sz/8-2;
-    h_w_fld(H_DAC_DMA_MEM_RADDR_LIM_MIN1, i);
-    qregs_dbg_get_info(&j);
-    printf("  DBG: set raddr lim %zd (dbg %d)\n", i, j);
-
-  }
-
-  // this must be done after pushing the dma data, because it primes qsdc.
-  qregs_set_alice_txing(params->is_alice && params->alice_txing);
-
-
-  //  qregs_set_cdm_en(params->mode=='c');
-  
-
-  qregs_clr_adc_status();
-  qregs_clr_tx_status();
-  qregs_clr_corr_status();
-
-
-  if (!params->is_alice) {
-    qregs_search_en(params->search);
-  } 
-
-
-  iio->num_iter=1;
-
-  
-  if (params->opt_save) {
-    e=tsd_iio_create_rxbuf(iio);
-    if (e) return e;
-  }
-
-  if (params->is_alice) {
-      // actually Think this could go before or after
-      // iiodev create buffer.
-    printf("a txrx\n");
-    qregs_search_and_txrx(1);
-  }
-  
-  tsd_params = *params;
+  iio->adc_buf=0;
 }
 
 
@@ -382,6 +242,7 @@ int tsd_first_action(tsd_setup_params_t *params, lcl_iio_t *iio) {
 
 
 
+#if 0
 int tsd_iio_read(lcl_iio_t *iio) {
   int itr, b_i, p_i, e, i;
   int t0_s;
@@ -556,7 +417,7 @@ int tsd_iio_read(lcl_iio_t *iio) {
     else
       fprintf(fp,"rx_same_hdrs = %d;\n", st.tx_same_hdrs);
     fprintf(fp,"alice_syncing = %d;\n", tsd_params.alice_syncing);
-    fprintf(fp,"alice_txing = %d;\n",  tsd_params.alice_txing);
+    fprintf(fp,"alice_txing = %d;\n",  1);
     fprintf(fp,"search = %d;\n",       tsd_params.search);
     fprintf(fp,"osamp = %d;\n",        st.osamp);
     fprintf(fp,"cipher_m = %d;\n",     st.cipher_m);
@@ -639,7 +500,7 @@ int tsd_iio_read(lcl_iio_t *iio) {
   //   iio_context_destroy(ctx);
   return 0;
 }
-
+#endif
 
 
 
@@ -650,28 +511,35 @@ int tsd_rd_pkt(int soc, char *buf, int buf_sz) {
   ssize_t sz;
   sz=read(soc, (void *)len_buf, 4);
   if (sz==0) return 0; // end of file. soc closed
-  if (sz<4) err("read len fail");
+  if (sz<4) {
+    printf("ERR: tsd_rd_pkt(): read len failed\n");
+    return 0;
+  }
   l = (int)ntohl(*(uint32_t *)len_buf);
   l = MIN(buf_sz, l);
   sz = read(soc, (void *)buf, l);
-  if (sz<l) err("read body fail");
+  if (sz<l) {
+    printf("ERR: tsd_rd_pkt(): read body failed\n");
+  }
   return sz;
 }
 
 int tsd_wr_pkt(int soc, char *buf, int pkt_sz) {
+// returns error code  
   char len_buf[4];
   uint32_t l;
   ssize_t sz;
   l = htonl(pkt_sz);
   // printf("wr %d\n", pkt_sz);
   sz = write(soc, (void *)&l, 4);
-  if (sz<4) err("write pktsz failed");
+  if (sz<4) return err_fail("write pktsz failed");
+
   
   sz = write(soc, (void *)buf, pkt_sz);
   if (sz<pkt_sz) {
     printf("size %zd\n", sz);
     printf("pkt_sz %d\n", pkt_sz);
-    err("write pkt body failed");
+    return err_fail("write pkt body failed");
   }
   return 0;
 }
@@ -704,7 +572,7 @@ int check(char *buf, char *key, int *param) {
 #define IIO_THREAD_DBG (1)
 
 
-void iio_cap(lcl_iio_t *p) {
+int tsd_iio_cap(lcl_iio_t *p) {
   int b_i;
   ssize_t left_sz, sz, sz_wr=0;
   void *adc_buf_p;
@@ -712,7 +580,7 @@ void iio_cap(lcl_iio_t *p) {
   int fd;
 
   fd = open("out/d.raw", O_CREAT | O_WRONLY | O_TRUNC, S_IRWXO);
-  if (fd<0) err("cant open d.raw");
+  if (fd<0) return tsd_err_fail("cant open d.raw");
 
   
   for(b_i=0; b_i<p->rx_num_bufs; ++b_i) {
@@ -721,8 +589,7 @@ void iio_cap(lcl_iio_t *p) {
     //      qregs_print_adc_status();
     if (sz<0) {
       sprintf(tsd_errmsg, "cant refill adc bufer %d", b_i);
-      printf("ERR: %s\n", tsd_errmsg);
-      e=1;
+      e=HDL_ERR_FAIL;
       break;
     }
     if (sz==0) {
@@ -739,7 +606,12 @@ void iio_cap(lcl_iio_t *p) {
 
     // iio_buffer_start can return a non-zero ptr after a refill.
     adc_buf_p = iio_buffer_start(p->adc_buf);
-    if (!adc_buf_p) err("iio_buffer_start returned 0");
+    if (!adc_buf_p) {
+      sprintf(tsd_errmsg, "iio_buffer_start returned 0");
+      printf("FATAL: iio_buffer_start returned 0");
+      e=HDL_ERR_FAIL;
+      break;
+    }
     // p = iio_buffer_end(adc_buf);
     // printf(" size %zd\n", p - adc_buf_p);
 
@@ -747,7 +619,7 @@ void iio_cap(lcl_iio_t *p) {
     left_sz = sz;
     while(left_sz>0) {
       sz = write(fd, adc_buf_p, left_sz);
-      if (sz<=0) err("write failed");
+      if (sz<=0) return err_fail("write failed");
       sz_wr += sz;
       if (sz == left_sz) break;
       printf("tried to write %zd but wrote %zd\n", left_sz, sz);
@@ -768,47 +640,65 @@ void iio_cap(lcl_iio_t *p) {
   printf("wrote %zd bytes\n", sz_wr);
 
 
-  iio_buffer_destroy(p->adc_buf);
 
   
-  
-  char hostname[32];	
+  time_t t;
+  struct tm *timeinfo;
+  time(&t);
+  timeinfo=localtime(&t);
+
+
   FILE *fp;
-  gethostname(hostname, sizeof(hostname));
-  hostname[31]=0;
+
+
   fp = fopen("out/r.txt","w");
   //  fprintf(fp,"sfp_attn_dB = %d;\n",   sfp_attn_dB);
-  fprintf(fp,"host = '%s';\n",       hostname);
   //    fprintf(fp,"tst_sync = %d;\n",     tst_sync);
-
-
-  // TODO: move most of this to qregs?
   fprintf(fp,"err = %d;\n", e);
-  fprintf(fp,"asamp_Hz = %lg;\n",    st.asamp_Hz);
-  fprintf(fp,"tst_sync = 1;\n");
+  fprintf(fp,"msg_fname = '%s';\n",   tsd_st.name);
+  fprintf(fp,"localtime = '%s';\n",  asctime(timeinfo));
+  fprintf(fp,"host = '%s';\n",      tsd_st.hostname);
+  fprintf(fp,"tst_sync = %d;\n",    1); // DELETE THIS!
+  fprintf(fp,"asamp_Hz = %lg;\n",   st.asamp_Hz);
   fprintf(fp,"use_lfsr = %d;\n",     st.use_lfsr);
   fprintf(fp,"lfsr_rst_st = '%x';\n", st.lfsr_rst_st);
   fprintf(fp,"meas_noise = %d;\n",   0); // meas_noise);
+  fprintf(fp,"cdm_en = %d;\n",      tsd_st.mode=='c');
   fprintf(fp,"noise_dith = %d;\n",  0); //  noise_dith);
   fprintf(fp,"tx_always = %d;\n",    st.tx_always);
-  fprintf(fp,"is_alice = %d;\n",   0); // is_alice);
+  fprintf(fp,"is_alice = %d;\n",  !st.is_bob);
+  fprintf(fp,"alice_txing = 1;\n");
   //  if (is_alice) 
   //    fprintf(fp,"rx_same_hdrs = 1;\n");
   //  else
-  fprintf(fp,"rx_same_hdrs = %d;\n", st.tx_same_hdrs);
-  fprintf(fp,"alice_syncing = %d;\n", st.alice_syncing);
-  fprintf(fp,"search = %d;\n",       1); // search
+  if (!st.is_bob)
+    fprintf(fp,"rx_same_hdrs = 1;\n");
+  else
+    fprintf(fp,"rx_same_hdrs = %d;\n", st.tx_same_hdrs);
+  fprintf(fp,"alice_syncing = %d;\n", tsd_st.mode=='s');
+  fprintf(fp,"search = %d;\n",       0); // search
   fprintf(fp,"osamp = %d;\n",        st.osamp);
   fprintf(fp,"cipher_w = %d;\n",     st.cipher_w);
   fprintf(fp,"cipher_en = %d;\n",     st.cipher_en);
-  fprintf(fp,"tx_pilot_pm_en = %d;\n", st.tx_pilot_pm_en);
-  fprintf(fp,"frame_qty = %d;\n",    st.frame_qty);
+  fprintf(fp,"cipher_en = %d;\n",     st.decipher_en);
+  fprintf(fp,"cipher_symlen_asamps = %d;\n", st.cipher_symlen_asamps);
+  
+  fprintf(fp,"tx_pilot_pm_en = %d;\n",  st.tx_pilot_pm_en);
+  fprintf(fp,"frame_qty = %d;\n",       st.frame_qty);
   fprintf(fp,"frame_pd_asamps = %d;\n", st.frame_pd_asamps);
-
   fprintf(fp,"init_pwr_thresh = %d;\n", st.init_pwr_thresh);
-  fprintf(fp,"hdr_pwr_thresh = %d;\n", st.hdr_pwr_thresh);
+  fprintf(fp,"hdr_pwr_thresh = %d;\n",  st.hdr_pwr_thresh);
   fprintf(fp,"hdr_corr_thresh = %d;\n", st.hdr_corr_thresh);
   fprintf(fp,"sync_dly_asamps = %d;\n", st.sync_dly_asamps);
+
+
+  fprintf(fp,"qsdc_data_is_qpsk = %d;\n", st.qsdc_data_cfg.is_qpsk);
+  fprintf(fp,"qsdc_data_pos_asamps = %d;\n", st.qsdc_data_cfg.pos_asamps);
+  fprintf(fp,"qsdc_data_len_asamps = %d;\n", st.qsdc_data_cfg.data_len_asamps);
+  fprintf(fp,"qsdc_symbol_len_asamps = %d;\n", st.qsdc_data_cfg.symbol_len_asamps);
+  fprintf(fp,"qsdc_bit_dur_syms = %d;\n", st.qsdc_data_cfg.bit_dur_syms);
+  fprintf(fp,"m11 = %g;\n", st.rebal.m11);
+  fprintf(fp,"m12 = %g;\n", st.rebal.m12);
   
   fprintf(fp,"hdr_len_bits = %d;\n", st.hdr_len_bits);
   fprintf(fp,"data_hdr = 'i_adc q_adc';\n");
@@ -826,7 +716,7 @@ void iio_cap(lcl_iio_t *p) {
 
   printf("iio_cap() wrote out/r.txt and out/p.raw\n");
 
-
+  return e;
 
 }  
 
@@ -835,7 +725,7 @@ void iio_cap(lcl_iio_t *p) {
 
 
 
-
+#if 0
 void *iio_thread_func(void *arg) {
   int done=0;
   //  lcl_iio_t *p=&st.lcl_iio;
@@ -867,12 +757,14 @@ void *iio_thread_func(void *arg) {
   return NULL;
 }
 
+#endif
+
 int lcl_iio_chan_en(struct iio_channel *ch, char *name) {
   iio_channel_enable(ch);
   if (!iio_channel_is_enabled(ch)) {
     static char tmp[256];
     sprintf(tmp, "%s not enabled", name);
-    return err_and_msg(CMD_ERR_FAIL, tmp);
+    return err_fail(tmp);
   }
 }
 
@@ -887,10 +779,10 @@ int lcl_iio_chan_en(struct iio_channel *ch, char *name) {
 
 
 
-void lcl_iio_create_dac_bufs(lcl_iio_t *p, int sz_bytes) {
+int lcl_iio_create_dac_bufs(lcl_iio_t *p, int sz_bytes) {
   size_t sz, dac_buf_sz;
   if (p->tx_buf_sz_bytes)
-    err("dac bufs already created");
+    return err_fail("dac bufs already created");
   // prompt("will create dac buf");
   sz = iio_device_get_sample_size(p->dac);
   // libiio sample size is 2 * number of enabled channels.
@@ -900,63 +792,63 @@ void lcl_iio_create_dac_bufs(lcl_iio_t *p, int sz_bytes) {
   p->dac_buf = iio_device_create_buffer(p->dac, dac_buf_sz, false);
   if (!p->dac_buf) {
     sprintf(tsd_errmsg, "cant create dac bufer  nsamp %zu", dac_buf_sz);
-    err(tsd_errmsg);
+    return err_fail(tsd_errmsg);
   }
   p->tx_buf_sz_bytes = sz_bytes;
 }
 
 
 // local IIO accesses
-int lcl_iio_open(lcl_iio_t *p) {
-
+int tsd_lcl_iio_open(lcl_iio_t *p) {
+  
   ssize_t sz, buf_sz;
   void *rval;
   int e;
 
   if (p->open)
-    err("BUG: iio already open");
+    return err_fail("BUG: iio already open");
 
 
-  pthread_mutex_init(&tsd_st.lock, NULL);
-  tsd_st.thread_cmd = 0;
-  pthread_cond_init(&tsd_st.cond, NULL);
+  //  pthread_mutex_init(&tsd_st.lock, NULL);
+  //  tsd_st.thread_cmd = 0;
+  //  pthread_cond_init(&tsd_st.cond, NULL);
 
   
-  e = pthread_create(&tsd_st.thread, NULL, &iio_thread_func, NULL);
-  if (e != 0)
-    return err_and_msg(CMD_ERR_FAIL, "cant create IIO thread");
+  //  e = pthread_create(&tsd_st.thread, NULL, &iio_thread_func, NULL);
+  //  if (e != 0)
+  //    return err_fail("cant create IIO thread");
   
   
   p->ctx = iio_create_local_context();
   if (!p->ctx)
-    return err_and_msg(CMD_ERR_FAIL, "cant get iio context");
+    return err_fail("cant get iio context");
   printf("DBG: made local iio context\n");
   e = iio_context_set_timeout(p->ctx, 3000); // in ms
   if (e)
-    return err_and_msg(CMD_ERR_FAIL, "cant set iio timeout");
+    return err_fail("cant set iio timeout");
     
   p->dac = iio_context_find_device(p->ctx, "axi-ad9152-hpc");
   if (!p->dac)
-    err("cant find dac");
+    return err_fail("cant find dac");
   p->adc = iio_context_find_device(p->ctx, "axi-ad9680-hpc");
   if (!p->adc)
-    err("cant find adc");
+    return err_fail("cant find adc");
 
   p->dac_ch0 = iio_device_find_channel(p->dac, "voltage0", true); // by name or id
   if (!p->dac_ch0)
-    err("dac lacks ch 0");
+    return err_fail("dac lacks ch 0");
   p->dac_ch1 = iio_device_find_channel(p->dac, "voltage1", true); // by name or id
   if (!p->dac_ch1)
-    err("dac lacks ch l");
+    return err_fail("dac lacks ch l");
   e=lcl_iio_chan_en(p->dac_ch0, "dac ch0");
   if (e) return e;
   e=lcl_iio_chan_en(p->dac_ch1, "dac ch1");
   if (e) return e;
 
   p->adc_ch0 = iio_device_get_channel(p->adc, 0);
-  if (!p->adc_ch0)  err("adc lacks ch 0");
+  if (!p->adc_ch0)  return err_fail("adc lacks ch 0");
   p->adc_ch1 = iio_device_get_channel(p->adc, 1);
-  if (!p->adc_ch1)  err("adc lacks ch 1");
+  if (!p->adc_ch1)  return err_fail("adc lacks ch 1");
   e=lcl_iio_chan_en(p->adc_ch0, "adc ch0");
   if (e) return e;
   e=lcl_iio_chan_en(p->adc_ch1, "adc ch1");
@@ -974,14 +866,12 @@ int lcl_iio_open(lcl_iio_t *p) {
   // creating a dac bufer stops it.
   // But then every subsequent create buffer seems to cause the dac to output
   // that sin wave for about 450us!
-  // really cant do this yet because we dont know amt of data to xmit.
-  // maybe I could tx data in chunks and pad it.
+  // So, create it now and keep it around.  Later, use iio_buffer_push_partial.
   lcl_iio_create_dac_bufs(p, 2048);
 
   //  e=iio_buffer_set_blocking_mode(p->dac_buf, true); // default is blocking.
   //  if (e) return err_and_msg(CMD_ERR_FAIL, "cant set blocking");
-
-
+  printf("lcl iio open\n");
   p->open=1;
   return 0;  
 }
@@ -1018,36 +908,63 @@ void lcl_iio_close(lcl_iio_t *p) {
 
 int cmd_fwver(int arg) {
   printf("fwver %d\n", qregs_fwver);
-  sprintf(rbuf, "0 %d", qregs_fwver);
+  sprintf(cmdrsp, "%d", qregs_fwver);
   return 0;
 }
 
 
+// This will be deleted
 int cmd_hdr_len(int arg) {
   int len;
-  if (!parse_int(&len)) {
-    printf("hdr_len %d (bits)\n", len);
-    qregs_set_hdr_len_bits(len);
-  }
-  if (st.hdr_len_bits != len)
-    printf("WARN: hdr len actually %d\n", st.hdr_len_bits);
-  sprintf(rbuf, "0 %d", st.hdr_len_bits);
+  if (parse_int(&len)) return CMD_ERR_SYNTAX;
+  printf("hdr_len %d (bits)\n", len);
+  qregs_set_hdr_len_bits(len);
+  //  if (st.hdr_len_bits != len)
+  //    printf("WARN: hdr len actually %d\n", st.hdr_len_bits);
+  sprintf(cmdrsp, "%d", st.hdr_len_bits);
   return 0;
 }
 
 
-int tsd_parse_kval(char *key, int *val) {
+int tsd_parse_key_int(char *key, int *val) {
   if (parse_search(key)) {
     sprintf(tsd_errmsg, "missing keyword %s", key);
+    printf(tsd_errmsg);
     return CMD_ERR_SYNTAX;
   }
   // printf("parsing: %s\n", parse_get_ptr());
   if (parse_int(val)) {
     sprintf(tsd_errmsg, "missing int after %s", key);
+    printf(tsd_errmsg);
     return CMD_ERR_SYNTAX;
   }
   return 0;
 }
+
+int tsd_parse_key_dbl(char *key, double *val) {
+  if (parse_search(key)) {
+    sprintf(tsd_errmsg, "missing keyword %s", key);
+    return CMD_ERR_SYNTAX;
+  }
+  printf("parsing: %s\n", parse_get_ptr());
+  if (parse_double(val)) {
+    sprintf(tsd_errmsg, "missing double after %s", key);
+    return CMD_ERR_SYNTAX;
+  }
+  return 0;
+}
+
+int tsd_parse_key_str(char *key, char *val, int len_bytes) {
+  if (parse_search(key)) {
+    sprintf(tsd_errmsg, "missing keyword %s", key);
+    return CMD_ERR_SYNTAX;
+  }
+  // printf("parsing: %s\n", parse_get_ptr());
+  parse_token(val, len_bytes);
+  return 0;
+}
+
+
 
 
 int cmd_qsdc_protocol(int arg) {
@@ -1057,8 +974,8 @@ int cmd_setup(int arg) {
   int en, is_alice, sync;
   qregs_sync_status_t sstat;
   printf("setup\n");
-  DO(tsd_parse_kval("is_alice=", &is_alice));
-  DO(tsd_parse_kval("sync=", &sync));
+  DO(tsd_parse_key_int("is_alice=", &is_alice));
+  DO(tsd_parse_key_int("sync=", &sync));
   if (is_alice) {
     qregs_get_sync_status(&sstat);
     if (!sstat.locked)
@@ -1112,7 +1029,7 @@ int cmd_iioopen(int arg) {
   int err;
   printf("iioopen\n");
   if (!tsd_st.iio.open) {
-    err = lcl_iio_open(&tsd_st.iio);
+    err = tsd_lcl_iio_open(&tsd_st.iio);
     if (err) return err;
   }
   sprintf(rbuf, "0");
@@ -1169,7 +1086,7 @@ int cmd_txrx(int arg) {
   adc_buf_sz = sz * buf_len_asamps;
   p->adc_buf = iio_device_create_buffer(p->adc, buf_len_asamps, false);
   if (!p->adc_buf)
-    return err_and_msg(CMD_ERR_FAIL, "cant make adc buffer");
+    return err_fail("cant make adc buffer");
   printf("DBG: made adc buf size %zd samps\n", (ssize_t)buf_len_asamps);
   
 
@@ -1234,7 +1151,7 @@ int cmd_qna_timo(int arg) {
   int ms;
   if (parse_int(&ms)) return CMD_ERR_NO_INT;
   if (!qna_connected)
-    return err_and_msg(CMD_ERR_FAIL, "qna not connected");
+    return err_fail("qna not connected");
   qregs_ser_set_timo_ms(ms);
   sprintf(rbuf, "0 %d", ms);
   return 0;
@@ -1246,7 +1163,7 @@ int cmd_qna_timo(int arg) {
 
 
 
-char qnarsp[1024];
+
 int cmd_qna(int arg) {
   char *p;
   int e;
@@ -1263,10 +1180,10 @@ int cmd_qna(int arg) {
 }
 
 
-hdl_cdm_cfg_t cdm_cfg;
-hdl_loop_cfg_t loop_cfg;
-hdl_qsdc_cfg_t qsdc_cfg;
-hdl_noise_cfg_t noise_cfg;
+//hdl_cdm_cfg_t cdm_cfg;
+//hdl_loop_cfg_t loop_cfg;
+//hdl_qsdc_cfg_t qsdc_cfg;
+//hdl_noise_cfg_t noise_cfg;
 
 int tsd_lcl_cdm_cfg(hdl_cdm_cfg_t *cfg_p, ssize_t *rx_buf_sz_bytes) {
 
@@ -1281,7 +1198,7 @@ int tsd_lcl_cdm_go(void) {
   qregs_search_en(0);
   h_w_fld(H_DAC_CTL_CIPHER_EN, 0);
   h_w_fld(H_ADC_ACTL_DECIPHER_EN,0);
-
+  h_w_fld(H_DAC_HDR_SECOND_IM_IS_PROBE,1);
 
   qregs_set_save_after_init(0);
   qregs_set_save_after_pwr(0);
@@ -1300,6 +1217,7 @@ int tsd_lcl_cdm_go(void) {
 
 int tsd_lcl_cdm_stop(void) {
   qregs_txrx(0);
+  h_w_fld(H_DAC_HDR_SECOND_IM_IS_PROBE,0);
 }
 
 int tsd_lcl_loop_cfg(hdl_loop_cfg_t *cfg)
@@ -1317,20 +1235,340 @@ int tsd_lcl_loop_stop(int delay)
   return 0;
 }
 
-int tsd_lcl_qsdc_cfg(hdl_qsdc_cfg_t *cfg)
+#define DAC_N (4095*2)
+
+
+static ssize_t read_file_into_buf(char *fname, void *buf, ssize_t buf_sz) {
+  int i, fd = open(fname,O_RDWR);
+  short int v;
+  ssize_t rd_sz;
+  if (fd<0) {
+    snprintf(tsd_errmsg, 512, "read_file_into_buf() cant open file %s", fname);
+    printf("%s\n",tsd_errmsg);
+    return 0;
+  }
+  rd_sz = read(fd, buf, DAC_N);
+  printf("  read %zd bytes from %s\n", rd_sz, fname);
+  /*
+  for(i=0;i<16;++i) {
+    v=((char *)buf)[i];
+    printf("%02x\n", (int)v&0xff);
+   }
+   printf("\n");
+  */
+  return rd_sz;
+}
+
+
+int tsd_lcl_prepare_im_premphasis(int en)
 {
+  // loads dac samples into tx buffer in HDL to be driven
+  // out to intensity modulator (IM) to counteract AC coupling
+  // distortion and produce a clean pulse like:  ___-___
+  
+  char *pilot_preemph_fname_p;
+  short int mem[DAC_N];
+  size_t data_sz_samps, mem_sz, sz;
+  qregs_pilot_cfg_t pilot_cfg;
+  int e,i;
+  lcl_iio_t *iio=&tsd_st.iio;
+  
+  if (!en) {
+    pilot_cfg.im_from_mem = 0;
+    qregs_cfg_pilot(&pilot_cfg, 0);
+    return 0;
+  }
+
+  e = ini_get_string(vars_cfg_all, "qsdc_im_preemph_fname", &pilot_preemph_fname_p);
+  if (e) return err_fail("missing qsdc_im_preemph_fname in cfg/ini_all.txt");
+  mem_sz=read_file_into_buf(pilot_preemph_fname_p, mem, sizeof(mem));
+  sz = st.frame_pd_asamps * 2;
+  if (mem_sz > sz) {
+    printf("WARN: file sz %zd is too long. truncating to %zd\n", mem_sz, sz);
+    mem_sz = sz;
+  }
+      
+  void *p;
+  p = iio_buffer_start(iio->dac_buf);
+  if (!p) return err_fail("no tx iio buffers to write into");
+  memcpy(p, mem, mem_sz);
+  // sz = iio_channel_write(dac_ch0, dac_buf, mem, mem_sz);
+  // returned 256=DAC_N*2, makes sense
+  printf("  filled dac_buf sz %zd bytes\n", mem_sz);
+  
+  qregs_zero_mem_raddr();
+
+  sz = iio_device_get_sample_size(iio->dac);
+  // printf("  dac samp sz %zd\n", sz);
+  data_sz_samps = (int)(mem_sz/sz);
+  if (data_sz_samps*sz != mem_sz)
+    return err_bug("preemphasis file has a bad length");
+
+  sz = iio_buffer_push_partial(iio->dac_buf, data_sz_samps); // supposed to ret num bytes
+  if (sz<0) {
+    sprintf(tsd_errmsg,"libiio push_partial returned errcode %d while writing preemphasis", sz);
+    return HDL_ERR_FAIL;
+  }
+  printf("  pushed %zd bytes\n", sz);
+
+  // Tell HDL how many words were written.  Actually, it already knows.
+  // I just did this as a means of verification.
+  i = mem_sz/8-2;
+  h_w_fld(H_DAC_DMA_MEM_RADDR_LIM_MIN1, i);
+  // qregs_dbg_get_info(&j);
+  // printf("  DBG: set raddr lim %zd (dbg %d)\n", i, j);
+
+
+  pilot_cfg.im_from_mem = 1;
+  qregs_cfg_pilot(&pilot_cfg, 0);
   return 0;
 }
+
+
+
+
+
+// WONT USE THIS
+#if 0
+int cmd_sendfile(int arg) {
+  // This was only made to speed up testing.
+  // it runs as alice and sends a file to Bob.
+  char data_fname[64];
+  short int mem[DAC_N];
+  lcl_iio_t *iio=&tsd_st.iio;
+  size_t mem_sz;
+  int e, tx_frame_qty;
+  void *p;
+    
+  parse_token(data_fname, 64);
+  printf("sending %s\n", data_fname);
+  
+  if (!iio->open) {
+    e=tsd_lcl_iio_open(iio);
+    if (e) return e;
+  }
+  
+  p = iio_buffer_start(iio->dac_buf);
+  if (!p) return err_fail("no tx iio buffer avail");
+  
+  mem_sz = read_file_into_buf(data_fname, p, iio->tx_buf_sz_bytes);
+  printf("  filled dac_buf sz %zd bytes\n", mem_sz);
+    
+  int data_len_syms = (int)mem_sz * 8 / (st.qsdc_data_cfg.is_qpsk?2:1) *
+    st.qsdc_data_cfg.bit_dur_syms;
+  printf("total data len %d symbols", data_len_syms);
+  int data_len_frames = (int)ceil((double)data_len_syms
+				  * st.qsdc_data_cfg.symbol_len_asamps
+				  / st.qsdc_data_cfg.data_len_asamps);
+  printf("   =  %d frames\n", data_len_frames);
+
+
+  qregs_zero_mem_raddr();
+
+  sz = iio_device_get_sample_size(iio->dac);
+  data_sz_samps = (int)(mem_sz/sz);
+  tx_sz = iio_buffer_push_partial(iio->dac_buf, data_sz_samps);
+  // iio_buffer_push_partial is supposed to ret num bytes
+  printf("  pushed %zd bytes\n", tx_sz);
+
+  // This is something that needs to change to do streaming
+  i = mem_sz/8-2;
+  h_w_fld(H_DAC_DMA_MEM_RADDR_LIM_MIN1, i);
+  qregs_dbg_get_info(&j);
+  printf("  DBG: set raddr lim %zd (dbg %d)\n", i, j);
+
+  sprintf(rbuf, "0 frames=%s", data_len_frames);    
+  return 0;  
+}
+#endif
+
+
+
+
+int tsd_lcl_qsdc_cfg_rx(hdl_qsdc_cfg_t *cfg)
+{
+  // tells remote to recieve a file or chunk of data
+  // This was only made to speed up testing.
+  // Alice sends this command to Bob
+  short int mem[DAC_N];
+  lcl_iio_t *iio=&tsd_st.iio;
+  size_t mem_sz;
+  int i, e, tx_frame_qty, rx_frame_qty;
+  void *p;
+
+  printf("tsd_lcl_qsdc_cfg_rx()\n");
+  
+  qregs_halfduplex_is_bob(1);
+  qregs_set_frame_pd_asamps(600);
+  qregs_set_init();
+
+  if (cfg->is_alice) {
+    qregs_pilot_cfg_t pilot_cfg;
+    pilot_cfg.im_from_mem = 0;
+    qregs_cfg_pilot(&pilot_cfg, 0);
+  }
+  
+  //  tsd_parse_key_int("frame_qty=", &rx_frame_qty);
+
+  printf("  rxing %s\n", cfg->msg_name);
+  strcpy(tsd_st.name, cfg->msg_name);
+  
+  if (!iio->open) {
+    e=tsd_lcl_iio_open(iio);
+    if (e) return e;
+  }
+  
+  // printf("bit dur syms %d\n", st.qsdc_data_cfg.bit_dur_syms); // 10
+  printf("  data len %zd bytes\n", cfg->bytes);
+  // double-check what alice said
+  int data_len_syms = (int)cfg->bytes * 8 / (st.qsdc_data_cfg.is_qpsk?2:1) *
+    st.qsdc_data_cfg.bit_dur_syms;
+  printf("  total data len %d symbols", data_len_syms);
+  int data_len_frames = (int)ceil((double)data_len_syms
+                                    * st.qsdc_data_cfg.symbol_len_asamps
+                                    / st.qsdc_data_cfg.data_len_asamps);
+  printf("   =  %d frames\n", data_len_frames);
+
+
+  i = round(cfg->est_round_trip_s * st.asamp_Hz);
+  printf("  est round trip = %d asamps", i);
+  i = ceil((double)i/st.frame_pd_asamps); // est round asamps
+  printf(" = %d frames\n", i);
+  tsd_st.round_trip_frames=i;  
+  
+  //  if (data_len_frames != rx_frame_qty) {
+  //    sprintf(tsd_errmsg,"frame qty data len mismatch");
+  //    return CMD_ERR_FAIL;
+  //  }
+
+  tx_frame_qty = data_len_frames;
+  rx_frame_qty = tsd_st.round_trip_frames + tx_frame_qty;
+
+  
+  // round up num frames to save, to fit into rx dma (adc) bufs.
+  {
+    int frames_per_iiobuf;
+    int max_frames_per_buf = (int)floor(IIO_ADC_MAX_ASAMPS/st.frame_pd_asamps);
+    printf("  max frames per buf %d", max_frames_per_buf);
+    iio->rx_num_bufs = ceil((double)(rx_frame_qty) / max_frames_per_buf);
+    printf("  so num_bufs %d per itr\n", iio->rx_num_bufs);
+    frames_per_iiobuf = ceil((double)(rx_frame_qty) / iio->rx_num_bufs);
+    rx_frame_qty = iio->rx_num_bufs * frames_per_iiobuf;
+    if (rx_frame_qty != tx_frame_qty)
+      printf("  actually SAVING %d frames per itr\n", rx_frame_qty);
+    iio->rx_buf_sz_bytes = frames_per_iiobuf * st.frame_pd_asamps*4;
+    printf("  rxbuf_len_bytes %zd\n", iio->rx_buf_sz_bytes);
+  }
+
+  
+
+  qregs_set_meas_noise(0);
+  qregs_set_use_lfsr(1);
+  qregs_set_alice_txing(0);
+  qregs_set_tx_always(0);
+  qregs_set_save_after_init(0);
+  qregs_set_save_after_pwr(0);
+  qregs_set_save_after_hdr(0);
+
+  qregs_search_en(0); // recover from prior crash if we need to.
+  qregs_txrx_new(0,0);
+  qregs_set_tx_pilot_pm_en(1);
+  qregs_set_alice_syncing(0);
+  qregs_set_alice_txing(0); // changes further down...
+
+  qregs_clr_corr_status(); // for dbg
+  qregs_clr_adc_status();
+  qregs_clr_tx_status();
+
+
+  qregs_set_tx_same_hdrs(1);
+
+
+  e=qregs_set_sync_ref('t');
+  if (e) return cmd_qerr("cant set sync ref");
+  qregs_qsdc_track_pilots(0);
+    //    qregs_qsdc_track_pilots(1);  // not ready to do this yet.
+
+
+  qregs_set_tx_go_condition('r'); // r=tx when rxbuf rdy
+  printf(" using tx_go condition %c\n", st.tx_go_condition);
+
+
+
+  qregs_set_frame_qty(tx_frame_qty);
+
+  if (st.frame_qty !=tx_frame_qty) { // a bug?
+    sprintf(tsd_errmsg,"actually tx frame qty %d not %d\n",
+	   st.frame_qty, tx_frame_qty);
+    return CMD_ERR_FAIL;
+  }
+
+
+  // DONE: make cipher prime NOT be dependent on cipher_en
+  // going low.  Then we can just keep it high all the time.
+  qregs_qsdc_other_cfg_t oth={0};
+  lookup_int("cipher_en",   &oth.cipher_en);
+  lookup_int("decipher_en", &oth.decipher_en);
+  printf("cipher_en %d  \t decipher_en %d\n",
+	   oth.cipher_en, oth.decipher_en);
+
+  oth.stream = 0; // for now
+  oth.m=2;
+  oth.dbg_cipher_same=0;
+  oth.cipher_symlen_asamps = st.osamp;
+  //  qsdc_cfg.is_bob = !is_alice;
+  qregs_qsdc_other_cfg(&oth);
+
+  // do I need this to reset IM preemph?
+  qregs_zero_mem_raddr();
+  
+  printf("new thing, bob resync for syncref t\n");
+  qregs_sync_resync();
+
+  sprintf(rbuf, "");
+  return 0;  
+}
+
+
+
+int tsd_lcl_qsdc_cfg(hdl_qsdc_cfg_t *cfg)
+{
+  if (cfg->do_tx)
+    return CMD_ERR_FAIL;
+  return tsd_lcl_qsdc_cfg_rx(cfg);
+}
+
+
 
 int tsd_lcl_qsdc_go(void)
 {
+  lcl_iio_t *iio=&tsd_st.iio;
+  int e;
+  // On alice, currently this must be done after pushing the dma data,
+  // because it primes qsdc.
+  // again, HDL needs to change so we don't have to do this.
+  if (st.is_bob) {
+    e= tsd_iio_create_rxbuf(iio);
+    if (e) return tsd_err(HDL_ERR_FAIL, "iio cant create rxbuf");
+  }
+  printf("tx 1  rx 1");
+  qregs_txrx_new(1,1);
   return 0;
 }
 
+
 int tsd_lcl_qsdc_stop(void)
 {
-  return 0;
+  int e;
+  printf("tx 0  rx 0\n");
+  qregs_txrx_new(0,0);
+  qregs_set_alice_txing(0);
+  tsd_iio_destroy_rxbuf(&tsd_st.iio);
+  return e;
 }
+
+
+
 
 int tsd_lcl_noise_cfg(hdl_noise_cfg_t *cfg)
 {
@@ -1350,14 +1588,14 @@ int tsd_lcl_noise_stop(void)
 int cmd_cdm_cfg(int arg) {
   ssize_t rx_buf_sz_bytes;
   printf("\nCMD: cdm cfg\n");
-  DO(tsd_parse_kval("is_passive=", &cdm_cfg.is_passive));
-  DO(tsd_parse_kval("is_wdm=",     &cdm_cfg.is_wdm));
+  DO(tsd_parse_key_int("is_passive=", &cdm_cfg.is_passive));
+  DO(tsd_parse_key_int("is_wdm=",     &cdm_cfg.is_wdm));
   
 
-  DO(tsd_parse_kval("sym_len=",   &cdm_cfg.sym_len_asamps));
-  DO(tsd_parse_kval("probe_len=", &cdm_cfg.probe_len_asamps));
-  DO(tsd_parse_kval("frame_pd=",  &cdm_cfg.frame_pd_asamps));  
-  DO(tsd_parse_kval("num_iter=",  &cdm_cfg.num_iter));
+  DO(tsd_parse_key_int("sym_len=",   &cdm_cfg.sym_len_asamps));
+  DO(tsd_parse_key_int("probe_len=", &cdm_cfg.probe_len_asamps));
+  DO(tsd_parse_key_int("frame_pd=",  &cdm_cfg.frame_pd_asamps));  
+  DO(tsd_parse_key_int("num_iter=",  &cdm_cfg.num_iter));
   tsd_lcl_cdm_cfg(&cdm_cfg, &rx_buf_sz_bytes);
   
   sprintf(rbuf, "0 is_passive=%d is_wdn=%d sym_len=%d probe_len=%d frame_pd=%d num_iter=%d  rx_bytes=%zd", cdm_cfg.is_passive,  cdm_cfg.is_wdm,
@@ -1370,6 +1608,7 @@ int cmd_cdm_cfg(int arg) {
 int cmd_cdm_go(int arg) {
   printf("\nCMD: cdm go\n");
   tsd_lcl_cdm_go();
+  tsd_st.mode='c';
   return 0;
 }
 
@@ -1396,34 +1635,81 @@ int cmd_loop_stop(int arg)
 {
   printf("\nCMD: loop stop\n");
   int delay; // delay in number of samples
-  DO(tsd_parse_kval("delay=", &delay));
+  DO(tsd_parse_key_int("delay=", &delay));
   tsd_lcl_loop_stop(delay);
   return 0;
 }
 
 int cmd_qsdc_cfg(int arg)
 {
+  // configuress ZCU to either tx or rx
+
+  // params:
+  //   is_alice  int
+  //   do_rx     int
+  //   bytes     int
+  //   rnd_trip  double seconds
+  int i, e;
+  hdl_qsdc_cfg_t cfg;
   printf("\nCMD: qsdc cfg\n");
-  tsd_lcl_qsdc_cfg(&qsdc_cfg);
-  return 0;
+  DO(tsd_parse_key_int("is_alice=", &cfg.is_alice));
+  DO(tsd_parse_key_int("bytes=", &i)); // could be cell len
+  cfg.bytes=i;
+  DO(tsd_parse_key_int("do_tx=", &cfg.do_tx));
+  //  DO(tsd_parse_key_int("frame_qty=", &rx_frame_qty));
+  // parsing DID NOT WORK
+  //  DO(tsd_parse_key_dbl("rnd_trip=", &cfg.est_round_trip_s));
+  cfg.est_round_trip_s = 64.0e-6;
+  
+  DO(tsd_parse_key_str("name=", cfg.msg_name, 64));
+  e = tsd_lcl_qsdc_cfg(&cfg);
+  printf("cfg over, e=%d\n", e);
+  sprintf(rbuf, "%d", e);
+  tsd_st.mode='q';
+  return e;
 }
+
 
 int cmd_qsdc_go(int arg)
 {
+  int e;
+  lcl_iio_t *iio=&tsd_st.iio;  
   printf("\nCMD: qsdc go\n");
+  if (tsd_st.mode!='q') return CMD_ERR_FAIL;
+    
+
+  e=tsd_lcl_qsdc_go();
+  if (e) return cmd_err_fail(tsd_get_last_errmsg());
+  
+  e=tsd_iio_cap(iio);
+  if (e) return cmd_err_fail(tsd_get_last_errmsg());  
+  sprintf(rbuf, "%d", e);
   return 0;
 }
 
+
 int cmd_qsdc_stop(int arg)
 {
+  int e;
   printf("\nCMD: qsdc stop\n");
+  if (tsd_st.mode!='q') cmd_err_fail("illegal in mode");
+  
+  e=tsd_lcl_qsdc_stop();
+  if (e) return cmd_err_fail(tsd_get_last_errmsg());
+
+  
+  tsd_st.mode=' ';
+  sprintf(rbuf, "%d", e);
   return 0;
 }
+
+
 
 int cmd_noise_cfg(int arg)
 {
   printf("\nCMD: noise cfg\n");
   tsd_lcl_noise_cfg(&noise_cfg);
+  tsd_st.mode='n';
   return 0;
 }
 
@@ -1476,7 +1762,7 @@ cmd_info_t cmds_info[]={
   {"txrx",      cmd_txrx,      0, 0},
   {"tx_always", cmd_tx_always, 0, 0},
   {"pilot_pm_en",  cmd_tx_pilot_pm_en,    0, 0},
-  {"qsdc",	cmd_subcmd, qsdc_cmds_info, 0 },
+  {"qsdc",	cmd_subcmd,  qsdc_cmds_info, 0},
   {"frame_pd",  cmd_frame_pd,  0, 0},
   {"frame_qty", cmd_frame_qty, 0, 0},
   {"fwver",     cmd_fwver,     0, 0},
@@ -1512,7 +1798,8 @@ void handle(int soc) {
       printf("WARN: cmd '%s' returning err %d\n", buf, e);
   }
   printf("client disconnected\n");
-  
+  // how to I wait for socket to finish?
+  sleep(1);
 }
 
 
@@ -1521,7 +1808,7 @@ void show_ipaddr(void) {
   struct ifaddrs *ifa, *p;
   char host[NI_MAXHOST];
   e = getifaddrs(&ifa);
-  if (e) err("getifaddrs");
+  if (e) printf("getifaddrs failed");
   p=ifa;
   while (p) {
     // ignore lo
@@ -1558,10 +1845,10 @@ int tsd_serve(void) {
 
   
   l_soc = socket(AF_INET, SOCK_STREAM, 0);
-  if (l_soc<0) err("cant make socket to listen on ");
+  if (l_soc<0) return err_fail("cant make socket to listen on ");
 
   e = setsockopt(l_soc, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
-  if (e<0) err("cant set sockopt");
+  if (e<0) return err_fail("cant set sockopt");
   
   // e = qna_usb_connect("/dev/ttyUSB1", &err_qna);
   //  e = qregs_ser_qna_connect(rbuf, 1024);
@@ -1574,38 +1861,26 @@ int tsd_serve(void) {
   srvr_addr.sin_addr.s_addr = htonl(INADDR_ANY);
   srvr_addr.sin_port = htons(QREGD_PORT);
   e =bind(l_soc, (struct sockaddr*)&srvr_addr, sizeof(srvr_addr));
-  if (e<0) err("bind fialed");
+  if (e<0) return err_fail("bind fialed");
 
   e = listen(l_soc, 2);
-  if (e<0) err("listen fialed");
+  if (e<0) return err_fail("listen fialed");
   
   printf("server listening on ");
   show_ipaddr();  
   printf("   port %d\n", QREGD_PORT);
   
-  // already inited in ts.c
-  //  if (qregs_init()) err("qregs fail");
-  
-  qregs_set_use_lfsr(1);
-  qregs_set_tx_always(0);
-  qregs_set_tx_pilot_pm_en(1);
-  //  i = qregs_dur_us2samps(2);
-  //  qregs_set_frame_pd_asamps(i);
-  //  qregs_set_osamp(4);
-  
-  //  qregs_set_frame_qty(10);
-
   
   while (1) {
     c_soc = accept(l_soc, (struct sockaddr *)NULL, 0);
-    if (c_soc<0) err("cant accept");
+    if (c_soc<0) return err_fail("cant accept");
     handle(c_soc);
   }
 
-  lcl_iio_close(&tsd_st.iio);
+  //  lcl_iio_close(&tsd_st.iio);
 
   
-  if (qregs_done()) err("qregs_done fail");
+  //  if (qregs_done()) return err_fail("qregs_done fail");
   
   return 0;
 }

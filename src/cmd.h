@@ -4,10 +4,24 @@
 #ifndef _CMD_H_
 #define _CMD_H_
 
+
+#define CMD_DESC(X) X
+
 typedef int cmd_t(int arg);
 
-#define CMD_PERDET (2) /* parse detid and pass to fcn */
-#define CMD_DESC(X) X
+typedef struct cmd_info_st {
+  char  *name; // name of command. or super-command if last in list
+  cmd_t *fn;   // pointer to function that performs cmd.  0 marks end of list
+  const struct cmd_info_st *arg;
+  CMD_DESC(char  *desc;) // 0 if no description.  CMD_ALIAS if same desc as prev.
+  char  *usage;
+} cmd_info_t;
+
+
+#define CMD_PERDET ((cmd_info_t *)(2))
+/* parse detid and pass to fcn */
+
+
 #define CMD_ALIAS  CMD_DESC(((char *)1))
 
 #define CMD_ERR_MT_LINE 1
@@ -20,16 +34,10 @@ typedef int cmd_t(int arg);
 #define CMD_ERR_TIMO      8
 #define CMD_ERR_FAIL      9
 #define CMD_ERR_QUIT      10
+#define CMD_ERR_BUG       11
 
 struct cmd_info_st;
 
-typedef struct cmd_info_st {
-  char  *name; // name of command. or super-command if last in list
-  cmd_t *fn;   // pointer to function that performs cmd.  0 marks end of list
-  const struct cmd_info_st *arg;
-  CMD_DESC(char  *desc;) // 0 if no description.  CMD_ALIAS if same desc as prev.
-  char  *usage;
-} cmd_info_t;
 
 int cmd_help(cmd_info_t *ci_p);
 

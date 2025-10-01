@@ -21,6 +21,7 @@
 #include "util.h"
 #include "h_vhdl_extract.h"
 #include "h.h"
+#include "hdl.h"
 //#include "tsd.h"
 
 #define QNICLL_LINKED (0)
@@ -101,6 +102,9 @@ int opt_qsdc=0;
 char mode=0;
 int opt_meas_noise=0, noise_dith=0;
 int stream=0;
+
+hdl_qsdc_cfg_t qsdc_cfg={0};
+
 
 void lookup_int(char *var_name, int *i_p) {
   int e=ini_get_int(tvars, var_name, i_p);
@@ -195,7 +199,6 @@ int rx_frame_qty;
 int tx_frame_qty;
 int search=0;
 int is_alice=0;
-int cipher_en=0;
 int cdm_en=0;
 
 
@@ -329,7 +332,7 @@ int first_action(void) {
 
   
   //  meas_noise = ask_yn("meas_noise", "meas_noise", 0);
-  if (opt_meas_noise) {
+  if (mode=='n') {
     tx_0=1;
     mem_sz=0;
     tx_always=0;
@@ -354,8 +357,7 @@ int first_action(void) {
 
   //  qregs_set_tx_always(0); // set for real further down.
   qregs_search_en(0); // recover from prior crash if we need to.
-  qregs_txrx(0);  
-  qregs_set_cipher_en(0, st.osamp, 2);
+  qregs_txrx_new(0,0);  
   qregs_set_tx_pilot_pm_en(!tx_0);
   qregs_set_alice_txing(0);
   qregs_get_avgpwr(&i,&j,&k); // just to clr ADC dbg ctrs
@@ -374,7 +376,7 @@ int first_action(void) {
 
   if (is_alice) {
 
-    qregs_set_save_after_init(1);
+    qregs_set_save_after_hdr(1);
 
       
 #if QNICLL_LINKED
@@ -437,7 +439,7 @@ int first_action(void) {
    
   qregs_set_frame_qty(tx_frame_qty);
   if (st.frame_qty !=tx_frame_qty) {
-    printf("ERR: actually frame qty %d not %d\n", st.frame_qty, tx_frame_qty);
+    printf("ERR: actually tx frame qty %d not %d\n", st.frame_qty, tx_frame_qty);
   }
 
 
@@ -544,10 +546,24 @@ int first_action(void) {
     corr_init(st.hdr_len_bits, st.frame_pd_asamps);
   }
 
-  // TODO: make cipher prime NOT be dependent on cipher_en
-  // going low.  Then we can just keep it high all the time.
-  qregs_set_cipher_en(cipher_en, st.osamp, 2);
 
+  // DONE: make cipher prime NOT be dependent on cipher_en
+  // going low.  Then we can just keep it high all the time.
+
+  qregs_qsdc_other_cfg_t oth={0};
+  lookup_int("cipher_en",   &oth.cipher_en);
+  lookup_int("decipher_en", &oth.decipher_en);
+  if (!is_alice && (mode=='q')) {
+    printf("cipher_en %d  \t decipher_en %d\n",
+	   oth.cipher_en, oth.decipher_en);
+  }
+  // for now:
+  //    oth.stream = ask_yn("stream qsdc", "qsdc_stream", 0);
+  oth.m=2;
+  oth.dbg_cipher_same=0;
+  oth.cipher_symlen_asamps = st.osamp;
+  //  qsdc_cfg.is_bob = !is_alice;
+  qregs_qsdc_other_cfg(&oth);
   
 
   // sinusoid before willpush    
@@ -564,11 +580,10 @@ int first_action(void) {
     tx_sz = iio_buffer_push_partial(lcl_iio.dac_buf, data_sz_samps); // supposed to ret num bytes
     printf("  pushed %zd bytes\n", tx_sz);
 
-    // This problem is solved
     i = mem_sz/8-2;
     h_w_fld(H_DAC_DMA_MEM_RADDR_LIM_MIN1, i);
     qregs_dbg_get_info(&j);
-    printf("  DBG: set raddr lim %zd (dbg %d)\n", i, j);
+    printf("  DBG: set raddr lim %d (dbg %d)\n", i, j);
 
   }
 
@@ -580,8 +595,10 @@ int first_action(void) {
     qregs_set_sync_ref('t');
     qregs_qsdc_track_pilots(0);
     //    qregs_qsdc_track_pilots(1);  // not ready to do this yet.
-    printf("new thing, bob resync for syncref t\n");
-    qregs_sync_resync();
+    if (mode!='n') {
+      printf("new thing, bob resync for syncref t\n");
+      qregs_sync_resync();
+    }
   }
    
 
@@ -625,10 +642,11 @@ int second_action(void) {
       *(times_s + itr) = (int)time(0);
 
     if (is_alice) {
-      // actually Think this could go before or after
+      // actually I think this could go before or after
       // iiodev create buffer.
       printf("a txrx\n");
-      qregs_search_and_txrx(1);
+      // not using search
+      qregs_search_and_txrx(0, 1);
     }
     //    else { // IS BOB
     //          qregs_search_en(search);
@@ -654,7 +672,10 @@ int second_action(void) {
       // can go after createbuffer.
       // could it go before?
       qregs_search_en(search);
-      qregs_txrx(1);
+
+      // cant do this till I change hdl quanet_adc line 1643
+      //      qregs_txrx_new((mode!='n'),1);
+      qregs_txrx_new(1,1);
 
       // prompt("READY? ");
       // printf("after txrx then create\n");	
@@ -732,7 +753,7 @@ int second_action(void) {
       usleep(1000*200);
       qregs_search_en(0);
     }
-    qregs_txrx(0);
+    qregs_txrx_new(0,0);
 
 
 
@@ -800,11 +821,13 @@ int second_action(void) {
     fprintf(fp,"asamp_Hz = %lg;\n",    st.asamp_Hz);
     fprintf(fp,"use_lfsr = %d;\n",     st.use_lfsr);
     fprintf(fp,"lfsr_rst_st = '%x';\n", st.lfsr_rst_st);
-    fprintf(fp,"meas_noise = %d;\n",   opt_meas_noise);
+    fprintf(fp,"meas_noise = %d;\n",   (mode=='n'));
     fprintf(fp,"cdm_en = %d;\n",       cdm_en);
     fprintf(fp,"cdm_num_iter = %d;\n",  st.cdm_cfg.num_iter);
     fprintf(fp,"noise_dith = %d;\n",   noise_dith);
     fprintf(fp,"tx_always = %d;\n",    st.tx_always);
+    // printf("phase est %d\n", st.phase_est_en);
+    fprintf(fp,"phase_est_en = %d;\n",    st.phase_est_en);
     fprintf(fp,"tx_hdr_twopi = %d;\n", st.tx_hdr_twopi);
     fprintf(fp,"tx_mem_circ = %d;\n",  st.tx_mem_circ);
     fprintf(fp,"tx_same_cipher = %d;\n", st.tx_same_cipher);
@@ -819,7 +842,8 @@ int second_action(void) {
     fprintf(fp,"stream = %d;\n",       stream);
     fprintf(fp,"osamp = %d;\n",        st.osamp);
     fprintf(fp,"cipher_m = %d;\n",     st.cipher_m);
-    fprintf(fp,"cipher_en = %d;\n",    cipher_en);
+    fprintf(fp,"cipher_en = %d;\n",      st.cipher_en);
+    fprintf(fp,"decipher_en = %d;\n",    st.decipher_en);
     fprintf(fp,"cipher_symlen_asamps = %d;\n", st.cipher_symlen_asamps);
     fprintf(fp,"tx_pilot_pm_en = %d;\n",  st.tx_pilot_pm_en);
     fprintf(fp,"frame_qty = %d;\n",    st.frame_qty);
@@ -910,6 +934,8 @@ int main(int argc, char *argv[]) {
   char c;
   double d;
   int opt_periter=1, opt_ask_iter=0;
+
+  mode=0;
   for(i=1;i<argc;++i) {
     for(j=0; (c=argv[i][j]); ++j) {
       //      if (c=='c') opt_corr=1;
@@ -917,7 +943,7 @@ int main(int argc, char *argv[]) {
       else if (c=='s') {opt_dflt=1; mode='s';}
       else if (c=='q') {opt_dflt=1; mode='q';}
       else if (c=='c') {opt_dflt=1; mode='c';}
-      else if (c=='n') opt_meas_noise=1;
+      else if (c=='n') {opt_dflt=1; mode='n';}
       else if (c=='v') opt_save=0;
       else if (c=='i') { opt_ask_iter=1; opt_periter=1;}
       else if (c=='a') opt_periter=0;
@@ -927,6 +953,7 @@ int main(int argc, char *argv[]) {
     }
   }
   ini_opt_dflt = opt_dflt;
+
 
 
   e = ini_read("tvars.txt", &tvars);
@@ -949,46 +976,49 @@ int main(int argc, char *argv[]) {
 
 
 
+  is_alice=0;
+  alice_syncing=0;
+  alice_txing=0;
+  cdm_en=0;
+
+
+
+  if (mode)
+    printf("mode %c\n",mode);
+  else {
+    char *s=ini_ask_str(tvars, "mode (qncs)", "mode", "n");
+    mode=s[0];
+  }
+
+  
   if (st.tx_mem_circ) {
     printf("NOTE: tx_mem_circ = 1\n");
-    is_alice=0;
     alice_syncing=0;
     qregs_set_alice_syncing(0);
-  } else {
-    is_alice = ini_ask_yn(tvars, "is_alice", "is_alice", 1);
-  }
-
-
-  if (opt_meas_noise) {
+  }else if (mode=='n') {
+    opt_meas_noise=1;
     noise_dith=(int)ini_ask_num(tvars, "noise_dith", "noise_dith", 1);
   }
-
-  cipher_en=0;
-  if (!is_alice && opt_qsdc)
-    lookup_int("cipher_en", &cipher_en);
   
   
   // For bob, this sets tx part to use an independent free-running sync
   // For alice, this uses the syncronizer
   // TODO: combine concept with set_sync_ref.
   qregs_halfduplex_is_bob(!is_alice);
-
-  alice_syncing=0;
-  alice_txing=0;
-  cdm_en=0;
+    
+  
   if (mode=='s') {
+    printf("alice syncing\n");
     alice_syncing=1;
   }else if (mode=='q') {
+    printf("alice txing\n");
     alice_txing=1;
+  }else if (mode=='n') {
+
   }else if (mode=='c') {
     cdm_en=1;
-  }else {
-    cdm_en  = ini_ask_yn(tvars, "do reflection tomo (CDM)", "cdm_en", 0);
-    if (!cdm_en) {
-      alice_syncing = ini_ask_yn(tvars, "is alice syncing", "alice_syncing", 1);
-      alice_txing   = ini_ask_yn(tvars, "is alice txing", "alice_txing", 1);
-    }
   }
+
 
 
   if (!cdm_en) {
@@ -996,7 +1026,6 @@ int main(int argc, char *argv[]) {
     i = qregs_dur_us2samps(d);
     qregs_set_frame_pd_asamps(i);
   }
-  
 
 
   // INTERACTIVE ASKING HOW MANY FRAMES TO SAVE
@@ -1008,17 +1037,26 @@ int main(int argc, char *argv[]) {
     num_iio_itr = 1;
     if (opt_ask_iter)
       num_iio_itr = ask_nnum("num_iio_itr", num_iio_itr);
-    if (cdm_en)
+
+
+    if (mode=='c')
       tx_frame_qty = 2;
-    else if (mode=='q')
-      tx_frame_qty = is_alice?10:1862;
-    else if (mode=='s')
+    else if (mode=='q') {
+      tx_frame_qty = ask_num("frames per itr", "frames_per_itr", 10);
+    }else if (mode=='s') {
+      tx_frame_qty = 2;
+    }else if (mode=='n') {
       tx_frame_qty = 2;
     //     frame_qty_req = is_alice?10:200;
-    else
+    }else
       tx_frame_qty = ask_num("frames per itr", "frames_per_itr", 10);
 
 
+
+
+    qregs_set_init();
+
+    
 
     // MOVE ALL CDM CONFIG HERE
     if (cdm_en) {
@@ -1065,17 +1103,39 @@ int main(int argc, char *argv[]) {
       if (lcl_iio.rx_buf_sz_bytes > MAX_RXBUF_SZ_BYTES)
 	err("BUG: use multiple rx iio bufs for cdm");
       
-    } else {
+      
+    } else if (mode=='n'){
+      printf("NOISE MEAS\n");
+      
+      tx_frame_qty = 2;
+      rx_frame_qty = 50;
+      printf("  would like to save %d frames worth\n", rx_frame_qty);
+      // round up num frames to save, to fit into rx dma (adc) bufs.
+      lcl_iio.rx_num_bufs = ceil((double)(rx_frame_qty) / max_frames_per_buf);
+      printf("  so num_bufs %d per itr\n", lcl_iio.rx_num_bufs);
+      frames_per_iiobuf = ceil((double)(rx_frame_qty) / lcl_iio.rx_num_bufs);
+      rx_frame_qty = lcl_iio.rx_num_bufs * frames_per_iiobuf;
+      if (rx_frame_qty != tx_frame_qty)
+	printf("  actually SAVING %d frames per itr\n", rx_frame_qty);
+      lcl_iio.rx_buf_sz_bytes = frames_per_iiobuf * st.frame_pd_asamps*4;
+      printf("  rxbuf_len_bytes %zd\n", lcl_iio.rx_buf_sz_bytes);
 
-      i = round(8e-6 * st.asamp_Hz); // est round trip
-      //    printf("6us = %d asamps\n", i);
-      i = ceil((double)i/st.frame_pd_asamps);
-      // printf(" = %d frames\n", i);
+      
+    } else{
+      
+      i = round(64e-6 * st.asamp_Hz); // est round trip
+      printf("round trip = %d asamps", i);
+      i = ceil((double)i/st.frame_pd_asamps); // est round asamps
+      printf(" = %d frames\n", i);
+
+      // printf("is_alice %d  alice_syncing %d\n", is_alice, alice_syncing);
+      
       if (!is_alice && alice_syncing)
         rx_frame_qty = tx_frame_qty*2 + i + 8;
       else
         rx_frame_qty = tx_frame_qty + i;
-      printf("  would like to save %d frames worth\n", rx_frame_qty);
+      printf("  would like to tx %d and save %d frames worth\n",
+	     tx_frame_qty, rx_frame_qty);
       // round up num frames to save, to fit into rx dma (adc) bufs.
       printf("  max frames per buf %d", max_frames_per_buf);
       lcl_iio.rx_num_bufs = ceil((double)(rx_frame_qty) / max_frames_per_buf);
@@ -1119,7 +1179,7 @@ int main(int argc, char *argv[]) {
     printf("test will last %d s\n", num_iio_itr*iio_dly_ms/1000);
   }
 
-  if (cdm_en)
+  if (cdm_en || (mode=='n'))
     search=0;
   else
     search = ini_ask_yn(tvars, "search for probe/pilot", "search", 1);
@@ -1165,14 +1225,13 @@ int main(int argc, char *argv[]) {
       }
       sz = iio_buffer_push_partial(lcl_iio.dac_buf, data_sz_samps); // supposed to ret num bytes
       if (sz<0)
-	printf("ERR: %d\n", sz);
+	printf("ERR: IIO error %zd\n", sz);
       else printf("  pushed %zd bytes\n", sz);
 
-      // This problem is solved
       i = mem_sz/8-2;
       h_w_fld(H_DAC_DMA_MEM_RADDR_LIM_MIN1, i);
       qregs_dbg_get_info(&j);
-      printf("  DBG: set raddr lim %zd (dbg %d)\n", i, j);
+      printf("  DBG: set raddr lim %d (dbg %d)\n", i, j);
     }
   }
   st.pilot_cfg.im_from_mem = hdr_preemph_en;

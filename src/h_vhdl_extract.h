@@ -1,7 +1,7 @@
 // h_vhdl_extract.h
 // hardware access constants
 // This file was automatically generated
-// by Register Extractor (ver 4.14) on Sat Sep 13 03:04:49 2025
+// by Register Extractor (ver 4.14) on Sun Sep 21 02:37:54 2025
 // compile version Mon Jun 16 10:25:20 2025
 // current dir:  C:\reilly\proj\quanet\quanet_hdl\projects\quanet_noco\zcu106
 // DO NOT MODIFY THIS FILE!
@@ -18,7 +18,7 @@
 // version constants
 #define H_VHDL_EXTRACT_VER (4)
 #define H_VHDL_EXTRACT_SUBVER (14)
-#define H_VHDL_EXTRACT_DATE "Sat Sep 13 03:04:49 2025"
+#define H_VHDL_EXTRACT_DATE "Sun Sep 21 02:37:54 2025"
 #define H_VHDL_EXTRACT_DIR "C:\reilly\proj\quanet\quanet_hdl\projects\quanet_noco\zcu106"
 
 
@@ -252,6 +252,7 @@
 
 #define H_ADC_ACTL                              0x10000000  /* 0 */
 #define H_ADC_ACTL_AREG_W                       0x10000400  /* 0xffffffff  r  */
+#define H_ADC_ACTL_SAVE_AFTER_DMAREQ            0x10000020  /* 0x00000001   w */
 #define H_ADC_ACTL_MEAS_NOISE                   0x10000021  /* 0x00000002   w */
 #define H_ADC_ACTL_TX_EN                        0x10000022  /* 0x00000004   w */
 #define H_ADC_ACTL_SAVE_AFTER_PWR               0x10000023  /* 0x00000008   w */
@@ -271,7 +272,7 @@
 #define H_ADC_ACTL_TX_GO_COND                   0x1000005d  /* 0x60000000   w */
 #define H_ADC_ACTL_RX_EN                        0x1000003f  /* 0x80000000   w -- I want to phase out txrx */
                                        // r 0xffffffff
-                                       // w 0xfffffffe
+                                       // w 0xffffffff
 
 #define H_ADC_STAT                              0x10001000  /* 1 */
 #define H_ADC_STAT_DMA_XFER_REQ_RC              0x10001020  /* 0x00000001  r  -- for dbg */
@@ -330,6 +331,7 @@
 #define H_ADC_PCTL_CLR_SAW_SYNC_OOL             0x10007021  /* 0x00000002   w */
 #define H_ADC_PCTL_EVENT_CNT_SEL                0x10007062  /* 0x0000001c   w */
 #define H_ADC_PCTL_PROC_CLR_CNTS                0x10007028  /* 0x00000100   w */
+#define H_ADC_PCTL_PROC_STAT_MAG_CLR            0x10007029  /* 0x00000200   w */
                                        // r 0xffffffff
                                        // w 0xffffffff
 
