@@ -174,12 +174,15 @@ unsigned ext(int v, unsigned int fldmsk) {
   return v & fldmsk;
 }
 
+char *qregs_ser_names[]={"QNA2", "RP", "QNA1"};
+
 void qregs_ser_flush(void) {
   h_pulse_fld(H_DAC_SER_RST);  
 }
 
 
 int qregs_block_until_tx_rdy(void) {
+// uses uio driver to block until IRQ from uart
   size_t sz;
   uint32_t u32;
   int i;
@@ -207,13 +210,14 @@ int qregs_block_until_tx_rdy(void) {
 
 int qregs_ser_sel(int sel) {
   int e;
-  printf("DBG1: qregs_ser_sel %d (tx_mt %d tx_full %d)\n", sel,
-	 h_r_fld(H_DAC_STATUS_SER_TX_MT),
-	 h_r_fld(H_DAC_SER_TX_FULL));
+  //  printf("DBG1: qregs_ser_sel %d (tx_mt %d tx_full %d)\n", sel,
+  //	 h_r_fld(H_DAC_STATUS_SER_TX_MT),
+  //	 h_r_fld(H_DAC_SER_TX_FULL));
   if (sel!=st.ser_state.sel) {
     // kludgey... need to add HDL support for this.
+    // Want to be able to block until uart is all txed out.
     e=qregs_block_until_tx_rdy();
-    printf("DBG1: tx_rdy\n");
+    // printf("DBG1: tx_rdy\n");
     if (e) return e;
     while (1) {
       if (h_r_fld(H_DAC_STATUS_SER_TX_MT)) break;
@@ -221,9 +225,9 @@ int qregs_ser_sel(int sel) {
     }
     usleep(500);
     h_w_fld(H_DAC_PCTL_SER_SEL, sel);
-    printf("DBG1: qregs_ser_sel %d  still ??? (tx_mt %d full %d)\n", sel,
-	   h_r_fld(H_DAC_STATUS_SER_TX_MT),
-	   h_r_fld(H_DAC_SER_TX_FULL));
+    //    printf("DBG1: qregs_ser_sel %d  still ??? (tx_mt %d full %d)\n", sel,
+    //	   h_r_fld(H_DAC_STATUS_SER_TX_MT),
+    //	   h_r_fld(H_DAC_SER_TX_FULL));
     st.ser_state.sel=sel;
   }
   return 0;
@@ -244,7 +248,6 @@ char ser_rx(void) {
 
 void ser_tx(char c) {
   int v;
-  printf("DBG: tx %c\n", c);
   v = h_r(H_DAC_SER);
   if (h_ext(H_DAC_SER_TX_FULL, v)) {
     printf("WARN: ser tx ovf!\n");
@@ -267,9 +270,8 @@ int qregs_ser_tx(char c) {
     printf("DBG: fd not open\n");
     return qregs_err_fail("qregs_ser_tx: uio not open");
   }
-  printf("DBG: qregs_ser_tx(%c)\n", c);
+  // printf("DBG: qregs_ser_tx(%c)\n", c);
   if (!h_r_fld(H_DAC_SER_TX_FULL)) {
-    printf("DBG: txing\n");
     ser_tx(c);
     return 0;
   }
@@ -668,10 +670,12 @@ void qregs_get_hdl_settings(void) {
   st.alice_syncing = h_r_fld(H_DAC_CTL_ALICE_SYNCING);
   st.osamp         = h_r_fld(H_DAC_CTL_OSAMP_MIN1) + 1;
   st.cipher_en     = h_r_fld(H_DAC_CTL_CIPHER_EN);
+  st.decipher_en   = h_r_fld(H_ADC_ACTL_DECIPHER_EN);
   st.qsdc_track_pilots = h_r_fld(H_ADC_QSDC_TRACK_PILOTS);
-  
   st.phase_est_en  = h_r_fld(H_ADC_ACTL_PHASE_EST_EN);
 
+  i = h_r_fld(H_DAC_CIPHER_M_LOG2);
+  st.cipher_m = 1<<i;
 
   {
     double s, c;
@@ -682,8 +686,6 @@ void qregs_get_hdl_settings(void) {
     st.xph_deg = atan2(s, c)*180/M_PI;
   }
   
-  
-  st.decipher_en   = h_r_fld(H_ADC_ACTL_DECIPHER_EN);
   st.is_bob        = h_r_fld(H_DAC_CTL_IS_BOB);
 
   st.pilot_cfg.im_from_mem         = h_r_fld(H_DAC_HDR_IM_PREEMPH);
@@ -841,9 +843,9 @@ char *qregs_go_cond_ctos(char c) {
   return "?";
 }
 
-char *qregs_voa_name[]={"qtx","hrx","datatx","datarx","qrx"};
+char *qregs_voa_names[]={"qtx", "hrx", "dtx", "drx", "qrx"};
 
-char *qregs_opsw_name[]={"lpbk","rx2","rx1"};
+char *qregs_opsw_names[]={"lpbk","rx2","rx1"};
 
 void qregs_print_settings(void) {
   int i;
@@ -917,12 +919,12 @@ AMP_DLY_ASAMPS));
 
   printf("VOAS: ");
   for(i=0;i<QREGS_NUM_VOA;++i)
-    printf(" %s=%.2f", qregs_voa_name[i], st.voa_attn_dB[i]);
+    printf("  %s%.2f", qregs_voa_names[i], st.voa_attn_dB[i]);
   printf("\n");
   
   printf("OPSW: ");
   for(i=0;i<QREGS_NUM_OPSW;++i)
-    printf(" %s=%d", qregs_opsw_name[i], st.opsw_cross[i]);
+    printf("  %s %d", qregs_opsw_names[i], st.opsw_cross[i]);
   printf("\n");
 
   printf("SER: sel %d  baud %d  parity %d  xonxoff %d\n",
@@ -948,6 +950,9 @@ int qregs_init(char *tty0, char *tty1) {
   int *p;
 
 
+  // The zcu can have a USB connections to the QNA boards.
+  // This was the way I did it at happy camper, and tried to do
+  // it for Photon Summit when the serial links did not work.
   if (tty0 && tty0[0]) {
     e=qna_usb_connect(0, tty0, dflt_qna_set_err_fn);
     st.qna_is_usb[0]=!e;
@@ -973,6 +978,7 @@ int qregs_init(char *tty0, char *tty1) {
   e=close(qregs_fd); // we dont need to keep this open
 
 
+  // TODO: I should write code to make sure this is the correct one:
   st.uio_fd=open("/dev/uio4", O_RDWR);
   if (st.uio_fd<0)
     qregs_err_fail("cant open /dev/uio4");
@@ -1097,23 +1103,7 @@ void qregs_set_init(void) {
 //       and make this a sort of lower-level non-user cfg function
 void qregs_qsdc_cipher_cfg(int symlen_asamps, int m, int dbg_cipher_same) {
   // usually decipher_en=cipher_en.
-  int i;
-  int l2m = round(log2(m));
-  i = h_w_fld(H_DAC_CIPHER_SYMLEN_MIN1_ASAMPS, symlen_asamps-1);
-  st.cipher_symlen_asamps = i+1;
-  l2m = h_w_fld(H_DAC_CIPHER_M_LOG2, l2m);
-  st.cipher_m = 1<<l2m;
-
-  int i = !!dbg_cipher_same;
-  h_w_fld(H_DAC_CIPHER_SAME, i);
-  st.tx_same_cipher = i;
-
   
-  //..  i=!!en;
-  //  h_w_fld(H_DAC_CTL_CIPHER_EN, i);
-  //  st.cipher_en = i;
-  //  i = h_w_fld(H_ADC_ACTL_DECIPHER_EN, decipher_en);
-  //  st.decipher_en = i;
 }
 
 

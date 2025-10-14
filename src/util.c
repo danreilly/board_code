@@ -51,4 +51,19 @@ int u_ask_yn(char *prompt, int dflt) {
   return v;
 }
 
+int u_ask_dbl(char *prompt, double dflt) {
+  double d,v=dflt;
+  char buf[32];
+  int n;
+  printf("%s (y/n) ? [%lg] > ", prompt, dflt);
+
+  n=scanf("%[^\n]", buf);
+  getchar(); // get cr
+  if (n==1) {
+    n=sscanf(buf, "%lg", &d);
+    if (n==1) v=d;
+  }
+  return v;
+}
+
 

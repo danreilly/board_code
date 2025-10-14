@@ -8,7 +8,7 @@
 // each command is implemented by a function called cmd_*
 // defined in this code.
 //
-// If the cmd function succeeds it returns a zero.
+// If the cmd function succeeds it returns a z
 //
 //
 // If the cmd function cannot do the command for some reason,
@@ -152,6 +152,13 @@ double *corr=0;
 
 
 tsd_setup_params_t tsd_params={0};
+
+
+
+
+void tsd_set_data_handler(tsd_data_handler_fn_t *fn) {
+  tsd_st.data_handler_fn = fn;  
+}
 
 
 
@@ -572,20 +579,91 @@ int check(char *buf, char *key, int *param) {
 #define IIO_THREAD_DBG (1)
 
 
-int tsd_iio_cap(lcl_iio_t *p) {
+ssize_t forwarding_buf_sz_bytes = 1596000*3;
+static char forwarding_buf[1596000*3];
+
+
+int tsd_iio_forward(lcl_iio_t *iio)
+{
+  char *p;
+  void *adc_buf_p;
+  ssize_t tot=0, sz;
+  int b_i, e;
+
+  p=(char *)forwarding_buf;
+  for(b_i=0; b_i < iio->rx_num_bufs; ++b_i) {
+    // printf("call refill\n");
+    sz = iio_buffer_refill(iio->adc_buf);
+    //      qregs_print_adc_status();
+    if (sz<0) {
+      sprintf(tsd_errmsg, "cant refill adc bufer %d", b_i);
+      e=HDL_ERR_FAIL;
+      break;
+    }
+    if (sz==0) {
+      printf("ERR: got 0 bytes from ADC\n");
+      break;
+    }
+
+    if (sz != iio->rx_buf_sz_bytes)
+      printf("tried to refill %d but got %d\n", iio->rx_buf_sz_bytes, sz);
+    // pushes double the dac_buf size.
+    //qregs_print_adc_status();
+    // printf("refilled buf %zd\n", sz);
+
+
+    // iio_buffer_start can return a non-zero ptr after a refill.
+    adc_buf_p = iio_buffer_start(iio->adc_buf);
+    if (!adc_buf_p) {
+      sprintf(tsd_errmsg, "iio_buffer_start returned 0");
+      printf("FATAL: iio_buffer_start returned 0");
+      e=HDL_ERR_FAIL;
+      break;
+    }
+    
+    // p = iio_buffer_end(adc_buf);
+    // printf(" size %zd\n", p - adc_buf_p);
+    if (tot+sz > forwarding_buf_sz_bytes) {
+      printf("BUG: will exceed expeceted size\n");
+      sprintf(tsd_errmsg, "iio_fwd will exceed expected data size");
+      e=HDL_ERR_BUG;
+      break;
+    }
+
+    if (0) { // b_i==0) { // monitor for dbg
+      short int *pp=(int16_t *)adc_buf_p;
+      int i;
+      for(i=0;i<64;i+=2) {
+         printf("%7d  %7d\n", pp[i], pp[i+1]);
+      }
+    }
+    
+    memcpy(p, adc_buf_p, sz);
+    p   += sz;
+    tot += sz;
+  }
+  if (!tot) return HDL_ERR_FAIL;
+ 
+
+  return tsd_st.data_handler_fn((uint16_t *)forwarding_buf,
+				tot/sizeof(int16_t));
+}
+
+int tsd_iio_cap(lcl_iio_t *iio) {
   int b_i;
   ssize_t left_sz, sz, sz_wr=0;
   void *adc_buf_p;
   int e=0;
   int fd;
 
+  
   fd = open("out/d.raw", O_CREAT | O_WRONLY | O_TRUNC, S_IRWXO);
   if (fd<0) return tsd_err_fail("cant open d.raw");
 
   
-  for(b_i=0; b_i<p->rx_num_bufs; ++b_i) {
+  for(b_i=0; b_i<iio->rx_num_bufs; ++b_i) {
     
-    sz = iio_buffer_refill(p->adc_buf);
+    sz = iio_buffer_refill(iio->adc_buf);
     //      qregs_print_adc_status();
     if (sz<0) {
       sprintf(tsd_errmsg, "cant refill adc bufer %d", b_i);
@@ -598,14 +676,14 @@ int tsd_iio_cap(lcl_iio_t *p) {
     }
 
     //      prompt("refilled buf");
-    if (sz != p->rx_buf_sz_bytes)
-      printf("tried to refill %d but got %d\n", p->rx_buf_sz_bytes, sz);
+    if (sz != iio->rx_buf_sz_bytes)
+      printf("tried to refill %d but got %d\n", iio->rx_buf_sz_bytes, sz);
     // pushes double the dac_buf size.
     //qregs_print_adc_status();
 
 
     // iio_buffer_start can return a non-zero ptr after a refill.
-    adc_buf_p = iio_buffer_start(p->adc_buf);
+    adc_buf_p = iio_buffer_start(iio->adc_buf);
     if (!adc_buf_p) {
       sprintf(tsd_errmsg, "iio_buffer_start returned 0");
       printf("FATAL: iio_buffer_start returned 0");
@@ -615,6 +693,8 @@ int tsd_iio_cap(lcl_iio_t *p) {
     // p = iio_buffer_end(adc_buf);
     // printf(" size %zd\n", p - adc_buf_p);
 
+
+    
     
     left_sz = sz;
     while(left_sz>0) {
@@ -637,7 +717,7 @@ int tsd_iio_cap(lcl_iio_t *p) {
   qregs_txrx(0);
 
   
-  printf("wrote %zd bytes\n", sz_wr);
+  printf("saved %zd bytes\n", sz_wr);
 
 
 
@@ -646,7 +726,10 @@ int tsd_iio_cap(lcl_iio_t *p) {
   struct tm *timeinfo;
   time(&t);
   timeinfo=localtime(&t);
-
+  char lt[64], *p;
+  strcpy(lt,asctime(timeinfo));
+  for(p=lt; *p;++p)
+    if (*p <' ') {*p=0; break;};
 
   FILE *fp;
 
@@ -656,7 +739,7 @@ int tsd_iio_cap(lcl_iio_t *p) {
   //    fprintf(fp,"tst_sync = %d;\n",     tst_sync);
   fprintf(fp,"err = %d;\n", e);
   fprintf(fp,"msg_fname = '%s';\n",   tsd_st.name);
-  fprintf(fp,"localtime = '%s';\n",  asctime(timeinfo));
+  fprintf(fp,"localtime = '%s';\n",  lt);
   fprintf(fp,"host = '%s';\n",      tsd_st.hostname);
   fprintf(fp,"tst_sync = %d;\n",    1); // DELETE THIS!
   fprintf(fp,"asamp_Hz = %lg;\n",   st.asamp_Hz);
@@ -702,7 +785,7 @@ int tsd_iio_cap(lcl_iio_t *p) {
   
   fprintf(fp,"hdr_len_bits = %d;\n", st.hdr_len_bits);
   fprintf(fp,"data_hdr = 'i_adc q_adc';\n");
-  //  fprintf(fp,"data_len_samps = %d;\n", p->cap_len_asamps);
+  //  fprintf(fp,"data_len_samps = %d;\n", iio->cap_len_asamps);
   fprintf(fp,"data_in_other_file = 2;\n");
   fprintf(fp,"num_itr = %d;\n", 1);
   fprintf(fp,"time = %d;\n", (int)time(0));
@@ -1458,6 +1541,10 @@ int tsd_lcl_qsdc_cfg_rx(hdl_qsdc_cfg_t *cfg)
       printf("  actually SAVING %d frames per itr\n", rx_frame_qty);
     iio->rx_buf_sz_bytes = frames_per_iiobuf * st.frame_pd_asamps*4;
     printf("  rxbuf_len_bytes %zd\n", iio->rx_buf_sz_bytes);
+
+    
+
+
   }
 
   
@@ -1551,7 +1638,7 @@ int tsd_lcl_qsdc_go(void)
     e= tsd_iio_create_rxbuf(iio);
     if (e) return tsd_err(HDL_ERR_FAIL, "iio cant create rxbuf");
   }
-  printf("tx 1  rx 1");
+  printf("tx 1  rx 1\n");
   qregs_txrx_new(1,1);
   return 0;
 }
@@ -1681,8 +1768,18 @@ int cmd_qsdc_go(int arg)
   e=tsd_lcl_qsdc_go();
   if (e) return cmd_err_fail(tsd_get_last_errmsg());
   
-  e=tsd_iio_cap(iio);
-  if (e) return cmd_err_fail(tsd_get_last_errmsg());  
+  if (tsd_st.data_handler_fn) {
+
+    e=tsd_iio_forward(iio);
+    if (e) {
+      printf("fwd failed\n");
+      return cmd_err_fail(tsd_get_last_errmsg());
+    }
+    
+  }else {
+    e=tsd_iio_cap(iio);
+    if (e) return cmd_err_fail(tsd_get_last_errmsg());
+  }
   sprintf(rbuf, "%d", e);
   return 0;
 }
@@ -1773,29 +1870,37 @@ cmd_info_t cmds_info[]={
   {0}};
 
 void handle(int soc) {
-  char buf[256];
+// This is the HDL server  
+  char cmd_str[512];
   int l, i, n, done=0, e;
-  printf("\nopened\n");
+  // printf("\nopened\n");
   while(!done) {
     tsd_errmsg[0]=0;
-    l = tsd_rd_pkt(soc, buf, 255);
+    l = tsd_rd_pkt(soc, cmd_str, 255);
     if (!l) {
       printf("WARN: abnormal close (client did not issue q)\n");
       break;
     }
     // printf("rxed %d bytes\n", l);
-    buf[l]=0;
+    cmd_str[l]=0;
     //  printf("rx: %s\n", tok);
-    e = cmd_exec(buf, cmds_info);
+    e = cmd_exec(cmd_str, cmds_info);
     if (e && (e!=CMD_ERR_QUIT))
       sprintf(rbuf, "%d %s", e, tsd_errmsg);
     
-    // printf("RSP: %s\n", rbuf);
+    printf("RESPONDING WITH: %s\n", rbuf);
     
-    l = tsd_wr_str(soc, rbuf);
+    e = tsd_wr_str(soc, rbuf);
     if (e==CMD_ERR_QUIT) break;
+    if (e) {
+      printf("ERR: %s\n", tsd_errmsg);
+      //      printf("WARN: tried to write rsp:\n");
+      //      u_print_all(rbuf);
+      //      printf("  which is %d bytes, but actually wrote %d\n",
+      //	     strlen(rbuf), l);
+    }
     if (e)
-      printf("WARN: cmd '%s' returning err %d\n", buf, e);
+      printf("WARN: cmd '%s' returning err %d\n", cmd_str, e);
   }
   printf("client disconnected\n");
   // how to I wait for socket to finish?
@@ -1840,21 +1945,12 @@ int tsd_serve(void) {
   int l_soc, c_soc, e, i;
   struct sockaddr_in srvr_addr;
 
-  printf("qregd\n");
-  printf("the demon that accesses quanet_regs\n");
-
   
   l_soc = socket(AF_INET, SOCK_STREAM, 0);
   if (l_soc<0) return err_fail("cant make socket to listen on ");
 
   e = setsockopt(l_soc, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
   if (e<0) return err_fail("cant set sockopt");
-  
-  // e = qna_usb_connect("/dev/ttyUSB1", &err_qna);
-  //  e = qregs_ser_qna_connect(rbuf, 1024);
-  //  if (e)
-  //    printf("*\n* ERR: %s\n*\n", errmsg);
-  //  else qna_connected=1;
   
   memset((void *)&srvr_addr, 0, sizeof(srvr_addr));
   srvr_addr.sin_family = AF_INET;
@@ -1866,7 +1962,7 @@ int tsd_serve(void) {
   e = listen(l_soc, 2);
   if (e<0) return err_fail("listen fialed");
   
-  printf("server listening on ");
+  printf("HDL server listening on ");
   show_ipaddr();  
   printf("   port %d\n", QREGD_PORT);
   
@@ -1874,13 +1970,10 @@ int tsd_serve(void) {
   while (1) {
     c_soc = accept(l_soc, (struct sockaddr *)NULL, 0);
     if (c_soc<0) return err_fail("cant accept");
+    printf("  client accepted\n");
     handle(c_soc);
   }
 
-  //  lcl_iio_close(&tsd_st.iio);
-
-  
-  //  if (qregs_done()) return err_fail("qregs_done fail");
   
   return 0;
 }

@@ -33,7 +33,12 @@ int qna_set_voa_attn_dB(int v_i, double *dBm);
 // m_i: one of QREGS_VOA_*
 
 
-
+int qna_voa_idx_to_board(int v_i, int *ser_i, int *bv_i);
+// sets:  
+//   v_i   : one of QREGS_VOA_* (base 0).  QNIC-wide voa identifier
+//   ser_i : one of QREGS_SER_SEL_*
+//   bv_i  : per-board VOA index, based as assigned by
+//         board firmware (currently base 1 for both boards)
 
 
 #endif

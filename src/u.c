@@ -24,6 +24,7 @@
 #include <unistd.h>
 #include "corr.h"
 #include <time.h>
+#include <ctype.h>
 #include "ini.h"
 #include "h_vhdl_extract.h"
 #include "qna.h"
@@ -1155,7 +1156,7 @@ int cmd_opsw(int arg) {
   int idx, i,cross, e;
   if (parse_int(&idx))   { // base one
     for(i=0;i<QREGS_NUM_OPSW;++i)
-      printf(" %s=%d", qregs_opsw_name[i], st.opsw_cross[i]);
+      printf(" %s=%d", qregs_opsw_names[i], st.opsw_cross[i]);
     printf("\n");
     return 0;
   }
@@ -1163,26 +1164,41 @@ int cmd_opsw(int arg) {
   --idx;
   e = qregs_set_opsw(idx, &cross);
   if (e) qerr("failed to set opsw");
-else  printf("%d (for %s)\n", cross, qregs_opsw_name[idx]);
+else  printf("%d (for %s)\n", cross, qregs_opsw_names[idx]);
   return 0;
 }
 
+
 int cmd_voa(int arg) {
-  int i, idx, e;
+  int i, voa_i=-1, e;
   double attn_dBm;
-  if (parse_int(&idx))  { // base one
+  parse_space();
+  if (isalpha(parse_next())) {
+    char voa_name[16];
+    parse_token(voa_name, 16);
+    for (i=0;i<QREGS_NUM_VOA;++i) {
+      if (!strcmp(voa_name, qregs_voa_names[i])) {
+	voa_i=i; break;
+      }
+    }
+    if (voa_i<0) return CMD_ERR_SYNTAX;
+  }else if (parse_int(&voa_i))  { // base one
     for(i=0;i<QREGS_NUM_VOA;++i)
-      printf(" %s=%.2f", qregs_voa_name[i], st.voa_attn_dB[i]);
+      printf("  %s %.2f", qregs_voa_names[i], st.voa_attn_dB[i]);
     printf("\n");
     return 0;
   }
-  if (parse_double(&attn_dBm)) return CMD_ERR_SYNTAX;
-  --idx;
-  e = qregs_set_voa_attn_dB(idx, &attn_dBm);
+
+  if (parse_double(&attn_dBm))
+    attn_dBm = u_ask_dbl("attenuation (dB)", st.voa_attn_dB[voa_i]);
+  e = qregs_set_voa_attn_dB(voa_i, &attn_dBm);
   if (e) qerr("failed to set voa");
-  printf("%.2f\n", attn_dBm);
+  printf("voa %s %.2f\n", qregs_voa_names[voa_i],
+	 st.voa_attn_dB[voa_i]);
   return 0;
 }
+
+
 
 int cmd_dbg_search(int arg) {
   printf("dbg search for hdr\n");
@@ -1320,7 +1336,7 @@ cmd_info_t cmds_info[]={
   {"shutdown", cmd_shutdown,   0, 0},
   {"thresh",   cmd_thresh, 0, "set detection thersholds", "[<pwr> <corr> [<ini>]]"}, 
   {"twopi",   cmd_twopi,   0, 0},
-  {"voa",     cmd_voa,   0, 0},
+  {"voa",     cmd_voa,   0, "[<voaidn> <dB>]"},
   {"ver",     cmd_ver,   0, 0}, 
   {0}};
 

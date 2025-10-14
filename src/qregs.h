@@ -429,7 +429,8 @@ void qregs_qsdc_track_pilots(int en);
 void qregs_set_memtx_to_pm(int en);
 
 
-
+// QNIC-wide VOAs (zero-based idx)
+//
 // in box1:
 #define QREGS_VOA_QUANT_TX (0)
 #define QREGS_VOA_HYB_RX   (1)
@@ -437,8 +438,8 @@ void qregs_set_memtx_to_pm(int en);
 #define QREGS_VOA_DATA_TX  (2)
 #define QREGS_VOA_DATA_RX  (3)
 #define QREGS_VOA_QUANT_RX (4)
-
-extern char *qregs_voa_name[];
+//
+extern char *qregs_voa_names[];
 
 
 int qregs_set_voa_attn_dB(int voa_i, double *attn_dB);
@@ -452,7 +453,7 @@ int qregs_set_voa_attn_dB(int voa_i, double *attn_dB);
 #define QREGS_OPSW_RX2 (1)
 #define QREGS_OPSW_RX1 (2)
 
-extern char *qregs_opsw_name[];
+extern char *qregs_opsw_names[];
 
 int qregs_set_opsw(int sw_i, int *cross);
 // sw_i: one of: QREGS_OPSW_L

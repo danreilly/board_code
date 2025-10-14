@@ -21,11 +21,13 @@ int qregs_findkey_int(char *buf, char *key, int *val);
 int qregs_findkey_dbl(char *buf, char *key, double *val);
 
 
-// serial links to QNA board and RP board
-int qregs_ser_sel(int sel);
+// serial links within QNIC
 #define QREGS_SER_SEL_QNA2 (0)
 #define QREGS_SER_SEL_RP   (1)
 #define QREGS_SER_SEL_QNA1 (2)
+int qregs_ser_sel(int sel);
+extern char *qregs_ser_names[];
+
 void qregs_ser_flush(void);
 void qregs_ser_set_params(int *baud_Hz, int parity, int en_xonxoff);
 int  qregs_ser_tx(char c);    // ret 0=success, 1=timo.

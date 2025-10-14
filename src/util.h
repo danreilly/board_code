@@ -8,5 +8,9 @@ void u_pause(char *prompt);
 
 int u_ask_yn(char *prompt, int dflt);
 // dflt: 0=no,1=yes,-1=no default
+// returns: 0=no, 1=yes
+
+int u_ask_dbl(char *prompt, double dflt);
+// returns: a double
 
 #endif

@@ -31,6 +31,10 @@ typedef struct lcl_iio_struct {
 } lcl_iio_t;
 
 
+// callback to handle data received over QSDC:
+typedef int tsd_data_handler_fn_t(int16_t *samples, size_t nsamps);
+// should return: 0=succes, or one of HDL_ERR_*
+
 typedef struct tsd_state_st {
   pthread_t thread;
   pthread_mutex_t lock;
@@ -42,6 +46,10 @@ typedef struct tsd_state_st {
   char mode;
   char name[64];
   char hostname[64];
+
+  int  forwarding;
+
+  tsd_data_handler_fn_t *data_handler_fn;
   
 } tsd_state_t;
 
@@ -49,7 +57,7 @@ typedef struct tsd_state_st {
 // TODO: should not be exported
 extern tsd_state_t tsd_st;
 
-
+void tsd_set_data_handler(tsd_data_handler_fn_t *fn);
 
 
 int tsd_cli_do_cmd(char *cmd, char *rsp, int rsp_len);
@@ -95,7 +103,14 @@ int  tsd_iio_create_rxbuf(lcl_iio_t *iio);
 void tsd_iio_destroy_rxbuf(lcl_iio_t *iio);
 int  tsd_iio_read(lcl_iio_t *iio);
 int  tsd_lcl_iio_open(lcl_iio_t *p);
-  
+
+
+
+int cmd_err(int code, char *msg);
+int cmd_err_fail(char *msg);
+int tsd_err_fail(char *msg);
+
+
 
 int wr_str(int soc, char *str);
 

@@ -16,7 +16,9 @@ static char qna_cmd[CMD_LEN];
 static char qna_rsp[CMD_LEN];
 char qna_errmsg[CMD_LEN];
 
-int qna_dbg=0;
+int qna_dbg=1;
+
+
 
 
 int qna_err(int e, char *msg) {
@@ -39,13 +41,13 @@ int qna_do_cmd(int ser_sel) {
     qregs_ser_flush();
     qregs_ser_sel(ser_sel);
     if (qna_dbg) {
-      printf("QNA tx:");
+      printf("%s tx: ", qregs_ser_names[ser_sel]);
       u_print_all(qna_cmd);
       printf("\n");
     }
     e=qregs_ser_do_cmd(qna_cmd, qna_rsp, CMD_LEN, 1);
     if (qna_dbg) {
-      printf("QNA rx:");
+      printf("%s rx: ", qregs_ser_names[ser_sel]);
       u_print_all(qna_rsp);
       printf("\n");
     }
@@ -55,7 +57,7 @@ int qna_do_cmd(int ser_sel) {
       qna_errmsg[CMD_LEN-1]=0;
       p=strstr(qna_errmsg,"\n");
       if (p) *p=0;
-      printf("QNA ERR: %s\n", qna_errmsg);
+      printf("%s ERR: %s\n", qregs_ser_names[ser_sel], qna_errmsg);
       return qregs_err_fail(qna_errmsg);
     }
   }
@@ -95,7 +97,7 @@ int qna_get_lo_status(qregs_lo_status_t *status) {
   int e, e1, i=0, j;
   strcpy(qna_cmd, "stat\r");
   e = qna_do_cmd(QREGS_SER_SEL_QNA1);
-  printf("qna rsp: %s\n", qna_rsp);
+  // printf("DBG: qna rsp: %s\n", qna_rsp);
   
   if (e) return e;
   e1 = qregs_findkey_int(qna_rsp, "gas_lock", &status->gas_lock);
@@ -259,27 +261,33 @@ int qna_set_lo_pwr_dBm(double *dBm) {
   return 0;  
 }
 
-int qna_voa_idx_to_board(int v_i, int *brd_i, int *bv_i) {
+int qna_voa_idx_to_board(int v_i, int *ser_i, int *bv_i) {
+// sets:  
+//   v_i   : one of QREGS_VOA_* (base 0).  QNIC-wide voa identifier
+//   ser_i : one of QREGS_SER_SEL_*
+//   bv_i  : per-board VOA index, based as assigned by
+//         board firmware (currently base 1 for both boards)
   if ((v_i<0) || (v_i>=QREGS_NUM_VOA))
     return qregs_err(QREGS_ERR_PARAM,"bad voa idx");
-  if (v_i<3) {
-    *brd_i=QREGS_SER_SEL_QNA1;
-    *bv_i=v_i;
+  if (v_i<2) {
+    *ser_i=QREGS_SER_SEL_QNA1;
+    *bv_i=v_i+1;
   }else {
-    *brd_i=QREGS_SER_SEL_QNA2;
-    *bv_i=v_i-3;
+    *ser_i=QREGS_SER_SEL_QNA2;
+    *bv_i=v_i-1;
   }
   return 0;
 }
 
 
 int qna_set_voa_attn_dB(int voa_i, double *dBm) {
-  int e, brd_i, bvoa_i;
-  e=qna_voa_idx_to_board(voa_i, &brd_i, &bvoa_i); // validates voa_i
+  int e, ser_i, bvoa_i;
+  e=qna_voa_idx_to_board(voa_i, &ser_i, &bvoa_i); // validates voa_i
   if (e) return e;
   // voa indexes are base 1  
-  sprintf(qna_cmd, "voa %d %.2lf\r", bvoa_i+1, *dBm);
-  e = qna_do_cmd_get_num(brd_i, dBm);
+  sprintf(qna_cmd, "voa %d %.2lf\r", bvoa_i, *dBm);
+  // printf("DBG: ser %d: %s\n", ser_i, qna_cmd);
+  e = qna_do_cmd_get_num(ser_i, dBm);
   if (e) return e;
   st.voa_attn_dB[voa_i]=*dBm;
   return 0;
