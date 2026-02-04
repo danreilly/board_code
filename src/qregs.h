@@ -282,6 +282,7 @@ void qregs_halfduplex_is_bob(int en);
 void qregs_set_save_after_init(int en);
 void qregs_set_save_after_pwr(int en);
 void qregs_set_save_after_hdr(int en);
+void qregs_set_save_after_dmareq(int en);
 
 int  qregs_set_qsdc_data_cfg(qregs_qsdc_data_cfg_t *data_cfg);
 
@@ -457,5 +458,6 @@ extern char *qregs_opsw_names[];
 
 int qregs_set_opsw(int sw_i, int *cross);
 // sw_i: one of: QREGS_OPSW_L
+void qregs_print_dbg_ser(void);
 
 #endif

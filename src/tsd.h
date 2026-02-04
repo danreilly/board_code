@@ -73,6 +73,8 @@ int tsd_serve(void);
 int  lcl_iio_open(lcl_iio_t *p);
 int  lcl_iio_chan_en(struct iio_channel *ch, char *name);
 int lcl_iio_create_dac_bufs(lcl_iio_t *p, int sz_bytes);
+int lcl_iio_destroy_dac_bufs(lcl_iio_t *p);
+
 void lcl_iio_close(lcl_iio_t *p);
 
 int tsd_lcl_cdm_cfg(hdl_cdm_cfg_t *cdm_cfg, ssize_t *rx_buf_sz_bytes);
@@ -117,9 +119,12 @@ int wr_str(int soc, char *str);
 int tsd_rd_pkt(int soc, char *buf, int buf_sz);
 int tsd_wr_pkt(int soc, char *buf, int pkt_sz);
 int tsd_wr_str(int soc, char *str);
+ssize_t tsd_read_file_into_buf(char *fname, void *buf, ssize_t buf_sz);
 
 int tsd_lcl_qsdc_cfg(hdl_qsdc_cfg_t *cfg);
 int tsd_lcl_qsdc_go(void);
 int tsd_lcl_qsdc_stop(void);
+
+int tsd_lcl_iio_send(const char *msg, size_t sz);
 
 #endif

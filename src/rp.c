@@ -17,7 +17,7 @@ static char rp_rsp[CMD_LEN];
 char rp_errmsg[CMD_LEN];
 
 
-int rp_dbg=1;
+int rp_dbg=0;
 int rp_connected=0;
 
 int rp_do_cmd(char *cmd) {

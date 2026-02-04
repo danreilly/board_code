@@ -506,7 +506,7 @@ int opt_srv=0;
     search = ini_ask_yn(tvars, "search for probe/pilot", "search", 1);
   
 
-  lcl_iio_open(&lcl_iio);
+  tsd_lcl_iio_open(&lcl_iio);
   printf("done lcl iio open\n");
 
 

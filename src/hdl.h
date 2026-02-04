@@ -7,6 +7,7 @@
 #define HDL_ERR_PARAM_CHANGE (1)
 #define HDL_ERR_FAIL   (2)
 #define HDL_ERR_BUG    (3)
+#define HDL_ERR_TIMO   (4)
 
 
 typedef struct hdl_qsdc_cfg_st {
@@ -45,5 +46,10 @@ int hdl_disconnect(void);
 int hdl_cdm_cfg(hdl_cdm_cfg_t *cfg);
 int hdl_cdm_go(void);
 int hdl_cdm_stop(void);
+
+int hdl_qsdc_cfg(hdl_qsdc_cfg_t *cfg);
+int hdl_qsdc_go(void);
+int hdl_qsdc_stop(void);
+
 
 #endif

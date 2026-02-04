@@ -1,8 +1,8 @@
 // h_vhdl_extract.h
 // hardware access constants
 // This file was automatically generated
-// by Register Extractor (ver 4.14) on Sun Sep 21 02:37:54 2025
-// compile version Mon Jun 16 10:25:20 2025
+// by Register Extractor (ver 4.14) on Fri Oct 24 22:58:29 2025
+// compile version Fri Oct 24 16:52:53 2025
 // current dir:  C:\reilly\proj\quanet\quanet_hdl\projects\quanet_noco\zcu106
 // DO NOT MODIFY THIS FILE!
 
@@ -18,7 +18,7 @@
 // version constants
 #define H_VHDL_EXTRACT_VER (4)
 #define H_VHDL_EXTRACT_SUBVER (14)
-#define H_VHDL_EXTRACT_DATE "Sun Sep 21 02:37:54 2025"
+#define H_VHDL_EXTRACT_DATE "Fri Oct 24 22:58:29 2025"
 #define H_VHDL_EXTRACT_DIR "C:\reilly\proj\quanet\quanet_hdl\projects\quanet_noco\zcu106"
 
 
@@ -28,7 +28,7 @@
           // -- std_logic_vector(31 downto 0) := x"8fffffff");
           // -- std_logic_vector(31 downto 0) := x"80000000";  -- start addr in DDR
           // -- for experimentation
-#define H_REDUCED_W (8)
+#define H_REDUCED_W (10)
 #define H_DAC_SAMP_W (16)
 #define H_ADC_SAMP_W (14)
 #define H_TXGOREASON_ALWAYS (0x3)
@@ -45,6 +45,7 @@
 #define H_QSDC_SYMS_PER_FR_W (9)
 #define H_QSDC_BITCODE (0x29a)
 #define H_CORR_MEM_D_W (16)
+#define H_CORR_REDUCED_W (10)
 #define H_CORR_DISCARD_LSBS (4)
 #define H_CTR_W (4)
 #define H_PASS_W (6)
@@ -78,9 +79,9 @@
 #define H_NUM_REGSPACES (2)
 
 // max register offset per regspace, indexed by regspace:
-#define H_MAX_REG_OFFSETS_INIT {13, 16}
+#define H_MAX_REG_OFFSETS_INIT {14, 17}
 // num registers per regspace, indexed by regspace:
-#define H_NUM_REGS_INIT {14, 17}
+#define H_NUM_REGS_INIT {15, 18}
 
 // inferred register locations and fields
 //   opt_old_consts 0
@@ -90,8 +91,8 @@
 //
 
 #define H_DAC (0)
-#define H_DAC_NUM_REGS       (14)
-#define H_DAC_MAX_REG_OFFSET (13)
+#define H_DAC_NUM_REGS       (15)
+#define H_DAC_MAX_REG_OFFSET (14)
 
 #define H_DAC_FR1                       0x00000000  /* 0 */
 #define H_DAC_FR1_REG_W                 0x00000400  /* 0xffffffff  r  */
@@ -117,11 +118,11 @@
 #define H_DAC_CTL_QSDC_TX_IRQ_EN        0x00002032  /* 0x00040000   w */
 #define H_DAC_CTL_IS_BOB                0x00002033  /* 0x00080000   w */
 #define H_DAC_CTL_DBG_ZERO_RADDR        0x00002034  /* 0x00100000   w */
-#define H_DAC_CTL_ALICE_TXING           0x00002035  /* 0x00200000   w -- set for qsdc */
+#define H_DAC_CTL_ALICE_TXING           0x00002035  /* 0x00200000   w -- set for qsdc. only set on alice */
 #define H_DAC_CTL_SIMPLE_IM_HDR_EN      0x00002036  /* 0x00400000   w -- use vals from IM register */
 #define H_DAC_CTL_TX_DBITS              0x00002037  /* 0x00800000   w -- alice transmits data */
 #define H_DAC_CTL_TX_INDEFINITE         0x00002038  /* 0x01000000   w -- runs until stopped */
-#define H_DAC_CTL_ALICE_SYNCING         0x00002039  /* 0x02000000   w */
+#define H_DAC_CTL_ALICE_SYNCING         0x00002039  /* 0x02000000   w -- only ever set on alice. */
 #define H_DAC_CTL_MEMTX_CIRC            0x0000203a  /* 0x04000000   w -- circular xmit from mem */
 #define H_DAC_CTL_PM_HDR_DISABLE        0x0000203b  /* 0x08000000   w -- header has no PM modulation */
 #define H_DAC_CTL_TX_ALWAYS             0x0000203c  /* 0x10000000   w -- used for dbg to view on scope */
@@ -242,13 +243,20 @@
                                        // r 0xffffffff
                                        // w 0x000007ff
 
+#define H_DAC_DBG2                      0x0000e000  /* 14 */
+#define H_DAC_DBG2_DBG_ADDR             0x0000e180  /* 0x00000fff  r  */
+#define H_DAC_DBG2_SER_CTR              0x0000e10c  /* 0x000ff000  r  */
+#define H_DAC_DBG2_SEL_W_ADDR           0x0000e03f  /* 0x80000000  rw */
+                                       // r 0x800fffff
+                                       // w 0x80000000
+
 //
 // register space ADC
 //
 
 #define H_ADC (1)
-#define H_ADC_NUM_REGS       (17)
-#define H_ADC_MAX_REG_OFFSET (16)
+#define H_ADC_NUM_REGS       (18)
+#define H_ADC_MAX_REG_OFFSET (17)
 
 #define H_ADC_ACTL                              0x10000000  /* 0 */
 #define H_ADC_ACTL_AREG_W                       0x10000400  /* 0xffffffff  r  */
@@ -260,7 +268,7 @@
 #define H_ADC_ACTL_SEARCH                       0x10000026  /* 0x00000040   w */
 #define H_ADC_ACTL_CORRSTART                    0x10000027  /* 0x00000080   w -- starts full CDC correlation */
 #define H_ADC_ACTL_ALICE_TXING                  0x10000028  /* 0x00000100   w */
-#define H_ADC_ACTL_SAMP_DLY_ASAMPS              0x10000049  /* 0x00000600   w */
+#define H_ADC_ACTL_SUBCYC_DLY_ASAMPS            0x10000049  /* 0x00000600   w -- 0 to 3 */
 #define H_ADC_ACTL_SAVE_AFTER_INIT              0x1000002b  /* 0x00000800   w */
 #define H_ADC_ACTL_LFSR_RST_ST                  0x1000016c  /* 0x007ff000   w */
 #define H_ADC_ACTL_PHASE_EST_EN                 0x10000037  /* 0x00800000   w */
@@ -268,11 +276,10 @@
 #define H_ADC_ACTL_DECIPHER_EN                  0x10000039  /* 0x02000000   w */
 #define H_ADC_ACTL_DO_STREAM_CDM                0x1000003a  /* 0x04000000   w */
 #define H_ADC_ACTL_RESYNC_CAUSES_FULLCORR       0x1000003b  /* 0x08000000   w */
-#define H_ADC_ACTL_CORR_MODE_CDM                0x1000003c  /* 0x10000000   w -- corr w same hdr */
 #define H_ADC_ACTL_TX_GO_COND                   0x1000005d  /* 0x60000000   w */
-#define H_ADC_ACTL_RX_EN                        0x1000003f  /* 0x80000000   w -- I want to phase out txrx */
+#define H_ADC_ACTL_RX_EN                        0x1000003f  /* 0x80000000   w */
                                        // r 0xffffffff
-                                       // w 0xffffffff
+                                       // w 0xefffffff
 
 #define H_ADC_STAT                              0x10001000  /* 1 */
 #define H_ADC_STAT_DMA_XFER_REQ_RC              0x10001020  /* 0x00000001  r  -- for dbg */
@@ -330,7 +337,7 @@
 #define H_ADC_PCTL_CLR_CTRS                     0x10007020  /* 0x00000001   w */
 #define H_ADC_PCTL_CLR_SAW_SYNC_OOL             0x10007021  /* 0x00000002   w */
 #define H_ADC_PCTL_EVENT_CNT_SEL                0x10007062  /* 0x0000001c   w */
-#define H_ADC_PCTL_PROC_CLR_CNTS                0x10007028  /* 0x00000100   w */
+#define H_ADC_PCTL_PROC_CLR_CORR_CNTS           0x10007028  /* 0x00000100   w */
 #define H_ADC_PCTL_PROC_STAT_MAG_CLR            0x10007029  /* 0x00000200   w */
                                        // r 0xffffffff
                                        // w 0xffffffff
@@ -376,10 +383,9 @@
 #define H_ADC_DBG_AREG_W                        0x1000c0bb  /* 0xf8000000  r  */
 #define H_ADC_DBG_DMA_FLUSH                     0x1000c03c  /* 0x10000000   w -- flush dma xfer to host, sending junk */
 #define H_ADC_DBG_CLK_SEL                       0x1000c03d  /* 0x20000000   w */
-#define H_ADC_DBG_HOLD                          0x1000c03e  /* 0x40000000   w */
 #define H_ADC_DBG_SAVE_AFTER_HDR                0x1000c03f  /* 0x80000000   w */
                                        // r 0xfbffffff
-                                       // w 0xf0000000
+                                       // w 0xb0000000
 
 #define H_ADC_CIPHER2                           0x1000d000  /* 13 */
 #define H_ADC_CIPHER2_AREG_W                    0x1000d400  /* 0xffffffff  r  */
@@ -392,8 +398,9 @@
 #define H_ADC_QSDC_TRACK_PILOTS                 0x1000e038  /* 0x01000000   w -- for qsdc */
 #define H_ADC_QSDC_RX_USE_TRANS                 0x1000e039  /* 0x02000000   w */
 #define H_ADC_QSDC_RX_EN                        0x1000e03a  /* 0x04000000   w -- changes DMA mux */
+#define H_ADC_QSDC_SKIPLEN_FRAMES               0x1000e09b  /* 0x78000000   w */
                                        // r 0xffffffff
-                                       // w 0x07ffffff
+                                       // w 0x7fffffff
 
 #define H_ADC_CTL3                              0x1000f000  /* 15 */
 #define H_ADC_CTL3_AREG_W                       0x1000f400  /* 0xffffffff  r  */
@@ -411,6 +418,13 @@
 #define H_ADC_QSDC2_QSDC_BITDUR_MIN1_SYMS       0x1001016e  /* 0x01ffc000   w -- total duration of a bit */
                                        // r 0xffffffff
                                        // w 0x01fffcff
+
+#define H_ADC_QSDC3                             0x10011000  /* 17 */
+#define H_ADC_QSDC3_AREG_W                      0x10011200  /* 0x0000ffff  r  */
+#define H_ADC_QSDC3_QSDC_BITS_PER_CELL_MIN1     0x10011180  /* 0x00000fff   w */
+#define H_ADC_QSDC3_QSDC_RX_CELL_CNT            0x10011210  /* 0xffff0000  r  */
+                                       // r 0xffffffff
+                                       // w 0x00000fff
 // initializer for h_baseaddr array
 #define H_BASEADDR_INIT { 0  /* for DAC */, \
 		0  /* for ADC */}

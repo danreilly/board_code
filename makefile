@@ -19,7 +19,7 @@ VARSRCS = ini mx parse
 VAROBJS = $(VARSRCS:%=obj/%.o)
 
 
-all: obj tst u ts
+all: obj tst u
 
 
 #libvars.a: $(VAROBJS)
@@ -35,14 +35,14 @@ libqregs.a: obj/qregs.o
 
 obj/qregs.o: src/h_vhdl_extract.h
 
-obj/tst.o: src/tst.c ../qnicll/qnicll.h
-	gcc -D'OPT_QNICLL=1' -I../qnicll $< -c -o $@
+obj/tst.o: src/tst.c
+	gcc $< -c -o $@
 
 tst: $(TOBJS)
-	gcc $(TOBJS) -L../qnicll -lm -liio  -o $@ 
+	gcc $(TOBJS)  -lm -liio  -o $@ 
 
 ts: $(TSOBJS)
-	gcc $(TSOBJS) -L../qnicll -lm -liio -pthread -o $@ 
+	gcc $(TSOBJS) -lm -liio -pthread -o $@ 
 
 
 # utilities

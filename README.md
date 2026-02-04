@@ -3,6 +3,15 @@
 This code runs on the ARM in the PS portion of the FPGA.
 
 
+## Installation
+
+For development, it's probably best to clone this repo to a shared directory on a host (Dan uses his PC, but you could use a linux host too) instead of onto the ZCU boards.  Then all the boards can mount that share, so they always all use the same sources and executables.  For example:
+
+`modprobe cifs`
+`mount.cifs //10.0.0.32/share /mnt/s -o cred=~/.smbcred`
+
+
+
 ## u
 
 This is the main utility program. run

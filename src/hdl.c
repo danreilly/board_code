@@ -35,8 +35,8 @@
 #include <pthread.h>
 
 #define REQ_SZ (1024)
-char req[REQ_SZ];
-char rsp[REQ_SZ];
+static char req[REQ_SZ];
+static char rsp[REQ_SZ];
 
 
 // The last error message, in case Caller cares
@@ -68,6 +68,7 @@ int hdl_connect(char *hostname) {
   //  tsd_err_fn = err_fn;
   cli_soc = socket(AF_INET, SOCK_STREAM, 0);
   if (cli_soc<0) BUG("cant make socket to connect on ");
+
   
   memset((void *)&srvr_addr, 0, sizeof(srvr_addr));
 
@@ -94,7 +95,7 @@ int hdl_connect(char *hostname) {
   e = connect(cli_soc, (struct sockaddr *)&srvr_addr, sizeof(srvr_addr));
   if (e<0) {
     sprintf(hdl_errmsg, "could not connect to host %s", hostname);
-    BUG(hdl_errmsg);
+    return HDL_ERR_FAIL;
   }
   socklen_t sz = sizeof(int);
   l=1;
@@ -102,7 +103,7 @@ int hdl_connect(char *hostname) {
   //  e= setsockopt(cli_soc, IPPROTO_TCP, O_NDELAY, (void *)&l, sz);
   if (e) {
     sprintf(hdl_errmsg, "cant set TCP_NODELAY");
-    BUG(hdl_errmsg);
+    return HDL_ERR_FAIL;
   }
 
   
@@ -128,9 +129,11 @@ int hdl_rd(int soc, char *rxbuf, int sz_bytes) {
   n = sscanf(rxbuf, "%d", &e);
   if (n!=1) BUG("no errcode rsp");
   if (e) {
-    u_print_all(rxbuf);
-    BUG(rxbuf);
+    //u_print_all(rxbuf);
+    strcpy(hdl_errmsg, rxbuf);
+    return n;
   }
+  return 0;
 }
 
 
@@ -161,6 +164,7 @@ int hdl_setup(tsd_setup_params_t *params) {
 	  params->alice_syncing,
 	  params->alice_txing,
 	  params->alice_syncing);
+  // printf("req %s\n", req);
   e=hdl_do_cmd(req, rsp, REQ_SZ);
 
   // TODO parse rsp
@@ -171,6 +175,37 @@ int hdl_cdm_cfg(hdl_cdm_cfg_t *cfg) {
   return 0;
 }
 
+int hdl_qsdc_cfg(hdl_qsdc_cfg_t *cfg) {
+  int e;
+  snprintf(req, REQ_SZ,
+	   "qsdc cfg is_alice=%d bytes=%d do_tx=%d rnd_trip=%.3e name=%s",
+	   cfg->is_alice,
+	   (int)cfg->bytes,
+	   cfg->do_tx,
+	   cfg->est_round_trip_s,
+	   cfg->msg_name);
+  // printf("req: %s\n", req);
+  e=hdl_do_cmd(req, rsp, REQ_SZ);
+  // TODO parse rsp
+  return e;
+}
+
+int hdl_qsdc_go(void) {
+  int e;
+  snprintf(req, REQ_SZ, "qsdc go");
+  e=hdl_do_cmd(req, rsp, REQ_SZ);
+  // TODO parse rsp
+  return e;
+}
+
+int hdl_qsdc_stop(void) {
+  int e;
+  snprintf(req, REQ_SZ, "qsdc stop");
+  e=hdl_do_cmd(req, rsp, REQ_SZ);
+  // TODO parse rsp
+  return e;
+}
+  
 #if 0
 int hdl_cdm_cfg(hdl_cdm_cfg_t *cfg) {
   int e;

@@ -100,6 +100,7 @@ int opt_dflt=0;
 int opt_sync=0;
 int opt_qsdc=0;
 char mode=0;
+char *data_fname=0;
 int opt_meas_noise=0, noise_dith=0;
 int stream=0;
 
@@ -325,7 +326,6 @@ int first_action(void) {
   int use_lfsr=1;
   //  int  hdr_preemph_en=0;
 
-  char data_fname[256];
   int tx_always=0;
   int tx_0=0;  
   int max_frames_per_buf;
@@ -377,6 +377,9 @@ int first_action(void) {
   if (is_alice) {
 
     qregs_set_save_after_hdr(1);
+    // I tried this 7:12pm to try to prevent the timo
+    // no change.
+    //    qregs_set_save_after_dmareq(1);
 
       
 #if QNICLL_LINKED
@@ -477,6 +480,9 @@ int first_action(void) {
     if (save_fd<0) err("cant open d.txt");
   }
 
+  printf("mem sz %zd  %d %d\n", mem_sz, alice_txing, is_alice);
+
+  
   memset(mem, 0, sizeof(mem));
   mem_sz=0;
   if (!mem_sz && is_alice && alice_txing) {
@@ -487,8 +493,11 @@ int first_action(void) {
       for (i=0; i<mem_sz/2; ++i)
 	mem[i]=0xaa55;
     }else {
-      strcpy(data_fname,
-	     ask_str("data_file", "data_file","src/data.bin"));
+      if (!data_fname) {
+        data_fname=ini_ask_str(tvars, "data file",
+			       "data_file","src/data.bin");
+        ini_save(tvars);
+      }
       mem_sz=read_file_into_buf(data_fname, mem, sizeof(mem));
     }
     int data_len_syms = (int)mem_sz * 8 / (st.qsdc_data_cfg.is_qpsk?2:1) *
@@ -645,8 +654,17 @@ int second_action(void) {
       // actually I think this could go before or after
       // iiodev create buffer.
       printf("a txrx\n");
+
       // not using search
-      qregs_search_and_txrx(0, 1);
+      // qregs_search_and_txrx(0, 1);
+      //      qregs_txrx_new(1,alice_rxing);
+      qregs_txrx_new(1,1);
+
+      // 7:20pm just trying this
+      //      if (!alice_rxing)
+      //	lcl_iio.rx_num_bufs=0;
+      // if (!alice_rxing) exit(0);
+      
     }
     //    else { // IS BOB
     //          qregs_search_en(search);
@@ -933,23 +951,29 @@ int main(int argc, char *argv[]) {
   int i, j, e;
   char c;
   double d;
-  int opt_periter=1, opt_ask_iter=0;
+  int opt_periter=1, opt_ask_iter=0, opt_go=0;
 
   mode=0;
   for(i=1;i<argc;++i) {
-    for(j=0; (c=argv[i][j]); ++j) {
-      //      if (c=='c') opt_corr=1;
-      if (c=='d') opt_dflt=1;
-      else if (c=='s') {opt_dflt=1; mode='s';}
-      else if (c=='q') {opt_dflt=1; mode='q';}
-      else if (c=='c') {opt_dflt=1; mode='c';}
-      else if (c=='n') {opt_dflt=1; mode='n';}
-      else if (c=='v') opt_save=0;
-      else if (c=='i') { opt_ask_iter=1; opt_periter=1;}
-      else if (c=='a') opt_periter=0;
-      else if (c!='-') {
-	printf("USAGES:\n  tst c  = compute correlations\n  tst n  = dont save to file\n  tst a = auto buf size calc\n  tst i = ask num iters\n tst d =use all defaults");
+    if (mode=='q') {
+      // mode has been set.next might be fname
+      data_fname=argv[i];
+    }else {
+      for(j=0; (c=argv[i][j]); ++j) {
+	//      if (c=='c') opt_corr=1;
+	if (c=='d') opt_dflt=1;
+	else if (c=='s') {opt_dflt=1; mode='s';}
+	else if (c=='q') {opt_dflt=1; mode='q';}
+	else if (c=='c') {opt_dflt=1; mode='c';}
+	else if (c=='n') {opt_dflt=1; mode='n';}
+	else if (c=='g') opt_go=1;
+	else if (c=='v') opt_save=0;
+	else if (c=='i') { opt_ask_iter=1; opt_periter=1;}
+	else if (c=='a') opt_periter=0;
+	else if (c!='-') {
+	  printf("USAGES:\n  tst c  = compute correlations\n  tst n  = dont save to file\n  tst a = auto buf size calc\n  tst i = ask num iters\n tst d =use all defaults");
 	return 1;}
+      }
     }
   }
   ini_opt_dflt = opt_dflt;
@@ -993,9 +1017,14 @@ int main(int argc, char *argv[]) {
   
   if (st.tx_mem_circ) {
     printf("NOTE: tx_mem_circ = 1\n");
+    is_alice=0;
     alice_syncing=0;
     qregs_set_alice_syncing(0);
-  }else if (mode=='n') {
+  } else {
+    is_alice = ini_ask_yn(tvars, "is_alice", "is_alice", 1);
+  }
+  
+  if (mode=='n') {
     opt_meas_noise=1;
     noise_dith=(int)ini_ask_num(tvars, "noise_dith", "noise_dith", 1);
   }
@@ -1005,7 +1034,9 @@ int main(int argc, char *argv[]) {
   // For alice, this uses the syncronizer
   // TODO: combine concept with set_sync_ref.
   qregs_halfduplex_is_bob(!is_alice);
-    
+
+
+  printf("mode %c\n", mode);
   
   if (mode=='s') {
     printf("alice syncing\n");
@@ -1240,11 +1271,13 @@ int main(int argc, char *argv[]) {
   
   
   e=first_action();
-  prompt("READY? ");
+  if (!opt_go)
+    prompt("READY? ");
   e=second_action();
 
   if (qregs_done()) err("qregs_done fail");
 
+  ini_save(tvars);
   ini_free(vars_cfg_all);
   ini_free(tvars);
   

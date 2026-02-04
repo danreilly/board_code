@@ -13,6 +13,14 @@
 #include "qregs.h"
 #include "qregs_ll.h"
 
+#include <sys/socket.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+
+
 // maybe should not call rp directly
 #include "rp.h"
 
@@ -32,6 +40,9 @@
 #include "h.h"
 #include "util.h"
 #include <sys/reboot.h>
+
+
+cmd_info_t cmds_info[];
 
 #define QREGC_LINKED (0)
 
@@ -75,7 +86,7 @@ int qerr(char *msg) {
 
 
 ini_val_t *tvars;
-int shutdown=0;
+int do_shutdown=0;
 
 /*
 int cmd_cal(int arg) {
@@ -86,6 +97,10 @@ int cmd_cal(int arg) {
   return 0;
 }
 */
+
+
+
+
 
 int cmd_set(int arg) {
   qregs_print_settings();
@@ -132,19 +147,27 @@ int cmd_dbg_clksel(int arg) {
 
 int cmd_dbg_ser(int arg) {
   int i;
-  printf("dbg ser\n");
-  if (parse_int(&i)) return CMD_ERR_SYNTAX;
-  qregs_ser_sel(i);
-  qregs_ser_tx('A');
+  //  printf("dbg ser\n");
+  qregs_print_dbg_ser();
+  //  if (parse_int(&i)) return CMD_ERR_SYNTAX;
+  //  qregs_ser_sel(i);
+  //  qregs_ser_tx('A');
   return 0;
 }
 
 int cmd_dbg_pwr(int arg) {
-  int pwr_avg, pwr_max, pwr_cnt;
+  int pwr_avg, pwr_max, pwr_cnt, n;
+  if (parse_int(&n)) n=-1;
   printf("pwr_avg pwr_max pwr_cnt\n");
-  while(1) {
+  while(n) {
     qregs_get_avgpwr(&pwr_avg, &pwr_max, &pwr_cnt);
-    printf("%6d  %6d  %6d\n", pwr_avg, pwr_max, pwr_cnt);
+    printf("%6d  %6d  %6d", pwr_avg, pwr_max, pwr_cnt);
+
+    if(pwr_cnt)
+      printf("  %6.1lf", (double)pwr_avg*1000/pwr_cnt);
+    if (n>0) --n;
+    if (!n) break;
+    printf("\n");
     usleep(1000*200);
   }
   return 0;
@@ -152,7 +175,7 @@ int cmd_dbg_pwr(int arg) {
 
 int cmd_sweep(int arg) {
   int th, th_sav, mx=256, step=10;
-  int pwr_avg, pwr_max, pwr_cnt;
+  int pwr_avg, pwr_max, pwr_cnt, z=0;
   th_sav = st.hdr_pwr_thresh;
   printf("pwr_th pwr_cnt\n");
   parse_int(&mx);
@@ -163,7 +186,7 @@ int cmd_sweep(int arg) {
   for(th=0;th<mx; th+=step) {
     qregs_set_hdr_det_thresh(th, st.hdr_corr_thresh);
     usleep(210);
-    qregs_get_avgpwr(&pwr_avg, &pwr_max, &pwr_cnt);    
+    qregs_get_avgpwr(&pwr_avg, &pwr_max, &pwr_cnt);
     printf("%d %d\n", th, pwr_cnt);
   }
   qregs_set_hdr_det_thresh(th_sav, st.hdr_corr_thresh);
@@ -229,12 +252,13 @@ int cmd_shutdown(int arg) {
     printf("ERR: cant shut down Red Pitaya");
     return CMD_ERR_FAIL;
   }
-  shutdown=1;
+  do_shutdown=1;
   return 0;
 }
 int cmd_dbg_rpinfo(int arg) {
   char str[512];
   if (qregs_rp_info(str, 512)) {
+    qregs_print_last_err();
     printf("ERR: cant get info from Red Pitaya");
     return CMD_ERR_FAIL;
   }else
@@ -917,7 +941,7 @@ int cmd_r(int arg) {
 }
 #endif
 
-cmd_info_t cmds_info[];
+
 
 int help(int arg) {
   cmd_help(cmds_info);
@@ -1039,8 +1063,10 @@ int cmd_sync_dbg(int arg) {
 
 int cmd_sync_tsweep(int arg) {
   int max, th, th_sav, i, pilot_cnt, mag_tot, e;
-  if (parse_int(&max))
-    return cmd_err_syntax("specify max thresh");
+  if (parse_int(&max)) {
+    max = ini_ask_num(tvars, "max thresh to sweep down from",
+		      "tsweep_max", 100);
+  }
   th_sav = st.hdr_corr_thresh;
   printf("th  pilot_cnt mag_tot\n");
   for (i=0; i<16;++i) {
@@ -1056,7 +1082,7 @@ int cmd_sync_tsweep(int arg) {
 }
 
 int cmd_sync_sweep(int arg) {
-  int i, hdr_cnt, mag_tot, best, best_i, avg, e;
+  int i, hdr_cnt, mag_tot, best, best_i, avg, e, z=0;
   for (i=0; i<st.frame_pd_asamps; i+=4) {
     //    for (i=0; i<8; i+=4) {
     qregs_set_sync_dly_asamps(i);
@@ -1066,11 +1092,19 @@ int cmd_sync_sweep(int arg) {
       avg=0;
     else
       avg=mag_tot/hdr_cnt;
+    
     if ((i==0)||(avg > best)) {
       best_i = i;
       best   = avg;
     }
-    printf("%3d  %5d/%5d = %d\n", i, mag_tot, hdr_cnt, avg);
+    if (!hdr_cnt || !mag_tot) {
+      if (!z)
+	printf("   ...\n");
+      z=1;
+    }else {
+      printf("%3d  %5d/%5d = %d\n", i, mag_tot, hdr_cnt, avg);
+      z=0;
+    }
   }
   printf("setting: sync_dly_asamps %d\n", best_i);
   qregs_set_sync_dly_asamps(best_i);
@@ -1216,14 +1250,16 @@ int cmd_dbg_search(int arg) {
 int cmd_lo_set(int arg) {
   int e;
   qregs_lo_settings_t s;
-  e = qna_get_qna_settings(&s);
+  e = qna_get_qna1_settings(&s);
   if (e) qregs_print_last_err();
-  printf("  en %d\n", s.en);
-  printf("  pwr_dBm %.2f\n", s.pwr_dBm);
-  printf("  wl_nm %.3f\n", s.wl_nm);
-  printf("  mode %c\n", s.mode);
-  printf("  gas_fdbk_en     %d\n", s.gas_fdbk_en);
-  printf("  gas_goal_offset %d MHz\n", s.gas_goal_offset_MHz);
+  else {
+    printf("  en %d\n", s.en);
+    printf("  pwr_dBm %.2f\n", s.pwr_dBm);
+    printf("  wl_nm %.3f\n", s.wl_nm);
+    printf("  mode %c\n", s.mode);
+    printf("  gas_fdbk_en     %d\n", s.gas_fdbk_en);
+    printf("  gas_goal_offset %d MHz\n", s.gas_goal_offset_MHz);
+  }
   return 0;
 }
 
@@ -1380,7 +1416,7 @@ int main(int argc, char *argv[]) {
 
   if (qregs_done()) err("qregs_done fail");
 
-  if (shutdown) {
+  if (do_shutdown) {
     if (u_ask_yn("really really shutdown",-1)) {
     printf("shutting down in 1 second...\n");
     usleep(1000000);

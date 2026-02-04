@@ -5,5 +5,3 @@ tx_go_condition = 'r';
 pm_delay_cycs = 15;
 sync_dly_asamps = -1020;
 remote_ipaddr = '10.0.0.5';
-
-

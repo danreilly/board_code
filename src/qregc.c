@@ -31,7 +31,7 @@ char tmp_errmsg[256];
 //};
 
 
-int soc;
+static int soc;
 static qregc_err_fn_t *my_err_fn;
 #define BUG(MSG) return (*my_err_fn)(MSG, QREGC_ERR_BUG);
 
@@ -42,6 +42,7 @@ static qregc_err_fn_t *my_err_fn;
   }
 
 static int dbg=0;
+
 
 int rd_pkt(char *buf, int buf_sz) {
   char len_buf[4];

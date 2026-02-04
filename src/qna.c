@@ -16,7 +16,7 @@ static char qna_cmd[CMD_LEN];
 static char qna_rsp[CMD_LEN];
 char qna_errmsg[CMD_LEN];
 
-int qna_dbg=1;
+int qna_dbg=0;
 
 
 
@@ -125,7 +125,7 @@ int qna_get_lo_status(qregs_lo_status_t *status) {
   
 
 
-int qna_get_qna_settings(qregs_lo_settings_t *set) {
+int qna_get_qna1_settings(qregs_lo_settings_t *set) {
   int e, e1=0, i=0;
   char tmp[64];
 
@@ -155,8 +155,8 @@ int qna_get_qna_settings(qregs_lo_settings_t *set) {
     e = qregs_findkey_int(qna_rsp, "opsw 3",
 			  &st.opsw_cross[QREGS_OPSW_RX1]);
     if (e) e1=e;
-    
   }
+  if (e1) return e1;
   
   strcpy(qna_cmd, "cfg it set\r");
   e = qna_do_cmd(QREGS_SER_SEL_QNA1);
@@ -174,8 +174,12 @@ int qna_get_qna_settings(qregs_lo_settings_t *set) {
     e = qregs_findkey_dbl(qna_rsp, "wl_nm", &set->wl_nm);
     if (e) e1=e;
   }
+  return e1;
+}
 
+int qna_get_qna2_settings(qregs_lo_settings_t *set) {  
   // box2
+  int e, e1=0;
   strcpy(qna_cmd, "set\r");
   e = qna_do_cmd(QREGS_SER_SEL_QNA2);
   if (e) e1=e;

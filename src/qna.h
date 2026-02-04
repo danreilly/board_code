@@ -14,7 +14,8 @@ int qna_set_timo_ms(int timo_ms);
 
 
 // gets all qna settings.  also gets lo settings.
-int qna_get_qna_settings(qregs_lo_settings_t *set);
+int qna_get_qna1_settings(qregs_lo_settings_t *set);
+int qna_get_qna2_settings(qregs_lo_settings_t *set);
 
 
 // Dealing with LO (local oscillator) laser

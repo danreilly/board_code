@@ -424,7 +424,7 @@ int tsd_iio_read(lcl_iio_t *iio) {
     else
       fprintf(fp,"rx_same_hdrs = %d;\n", st.tx_same_hdrs);
     fprintf(fp,"alice_syncing = %d;\n", tsd_params.alice_syncing);
-    fprintf(fp,"alice_txing = %d;\n",  1);
+    fprintf(fp,"alice_txing = %d;\n",  tsd_params.alice_txing);
     fprintf(fp,"search = %d;\n",       tsd_params.search);
     fprintf(fp,"osamp = %d;\n",        st.osamp);
     fprintf(fp,"cipher_m = %d;\n",     st.cipher_m);
@@ -748,9 +748,9 @@ int tsd_iio_cap(lcl_iio_t *iio) {
   fprintf(fp,"meas_noise = %d;\n",   0); // meas_noise);
   fprintf(fp,"cdm_en = %d;\n",      tsd_st.mode=='c');
   fprintf(fp,"noise_dith = %d;\n",  0); //  noise_dith);
-  fprintf(fp,"tx_always = %d;\n",    st.tx_always);
-  fprintf(fp,"is_alice = %d;\n",  !st.is_bob);
-  fprintf(fp,"alice_txing = 1;\n");
+  fprintf(fp,"tx_always = %d;\n",   st.tx_always);
+  fprintf(fp,"is_alice = %d;\n",    !st.is_bob);
+  fprintf(fp,"alice_txing = %d;\n", tsd_st.mode=='q');
   //  if (is_alice) 
   //    fprintf(fp,"rx_same_hdrs = 1;\n");
   //  else
@@ -763,7 +763,7 @@ int tsd_iio_cap(lcl_iio_t *iio) {
   fprintf(fp,"osamp = %d;\n",        st.osamp);
   fprintf(fp,"cipher_w = %d;\n",     st.cipher_w);
   fprintf(fp,"cipher_en = %d;\n",     st.cipher_en);
-  fprintf(fp,"cipher_en = %d;\n",     st.decipher_en);
+  fprintf(fp,"decipher_en = %d;\n",     st.decipher_en);
   fprintf(fp,"cipher_symlen_asamps = %d;\n", st.cipher_symlen_asamps);
   
   fprintf(fp,"tx_pilot_pm_en = %d;\n",  st.tx_pilot_pm_en);
@@ -862,22 +862,27 @@ int lcl_iio_chan_en(struct iio_channel *ch, char *name) {
 
 
 
-int lcl_iio_create_dac_bufs(lcl_iio_t *p, int sz_bytes) {
+
+int lcl_iio_create_dac_bufs(lcl_iio_t *iio, int sz_bytes) {
   size_t sz, dac_buf_sz;
-  if (p->tx_buf_sz_bytes)
+
+  if (iio->dac_buf) return 0;
+  
+  printf("iio create dac bufs\n");
+  if (iio->tx_buf_sz_bytes)
     return err_fail("dac bufs already created");
   // prompt("will create dac buf");
-  sz = iio_device_get_sample_size(p->dac);
+  sz = iio_device_get_sample_size(iio->dac);
   // libiio sample size is 2 * number of enabled channels.
   dac_buf_sz = sz_bytes / sz;
-  // NOTE: oddly, this create buffer seems to cause the dac to output
-  //       a GHz sin wave for about 450us.
-  p->dac_buf = iio_device_create_buffer(p->dac, dac_buf_sz, false);
-  if (!p->dac_buf) {
+  // note: oddly, this create buffer seems to cause the dac to output
+  //       a ghz sin wave for about 450us.
+  iio->dac_buf = iio_device_create_buffer(iio->dac, dac_buf_sz, false);
+  if (!iio->dac_buf) {
     sprintf(tsd_errmsg, "cant create dac bufer  nsamp %zu", dac_buf_sz);
     return err_fail(tsd_errmsg);
   }
-  p->tx_buf_sz_bytes = sz_bytes;
+  iio->tx_buf_sz_bytes = sz_bytes;
 }
 
 
@@ -1029,7 +1034,7 @@ int tsd_parse_key_dbl(char *key, double *val) {
     sprintf(tsd_errmsg, "missing keyword %s", key);
     return CMD_ERR_SYNTAX;
   }
-  printf("parsing: %s\n", parse_get_ptr());
+  // printf("parsing: %s\n", parse_get_ptr());
   if (parse_double(val)) {
     sprintf(tsd_errmsg, "missing double after %s", key);
     return CMD_ERR_SYNTAX;
@@ -1481,7 +1486,7 @@ int tsd_lcl_qsdc_cfg_rx(hdl_qsdc_cfg_t *cfg)
 
   printf("tsd_lcl_qsdc_cfg_rx()\n");
   
-  qregs_halfduplex_is_bob(1);
+  qregs_halfduplex_is_bob(!cfg->is_alice);
   qregs_set_frame_pd_asamps(600);
   qregs_set_init();
 
@@ -1551,12 +1556,19 @@ int tsd_lcl_qsdc_cfg_rx(hdl_qsdc_cfg_t *cfg)
 
   qregs_set_meas_noise(0);
   qregs_set_use_lfsr(1);
-  qregs_set_alice_txing(0);
   qregs_set_tx_always(0);
   qregs_set_save_after_init(0);
   qregs_set_save_after_pwr(0);
   qregs_set_save_after_hdr(0);
 
+  if (cfg->is_alice) {
+    qregs_sync_status_t sstat;
+    qregs_get_sync_status(&sstat);
+    if (!sstat.locked)
+      printf("synchronizer unlocked\n");
+  }
+
+  
   qregs_search_en(0); // recover from prior crash if we need to.
   qregs_txrx_new(0,0);
   qregs_set_tx_pilot_pm_en(1);
@@ -1570,12 +1582,18 @@ int tsd_lcl_qsdc_cfg_rx(hdl_qsdc_cfg_t *cfg)
 
   qregs_set_tx_same_hdrs(1);
 
-
-  e=qregs_set_sync_ref('t');
-  if (e) return cmd_qerr("cant set sync ref");
-  qregs_qsdc_track_pilots(0);
+  if (!cfg->is_alice) {
+    e=qregs_set_sync_ref('t');
+    if (e) return cmd_qerr("cant set sync ref");
+    qregs_qsdc_track_pilots(0);
     //    qregs_qsdc_track_pilots(1);  // not ready to do this yet.
+    qregs_set_tx_go_condition('r'); // r=tx when rxbuf rdy
+  } else {
+    e=qregs_set_sync_ref('r');
+    qregs_set_tx_go_condition('h'); // h=tx when see hdr
 
+  }
+  // if alice, should be set to rxclk
 
   qregs_set_tx_go_condition('r'); // r=tx when rxbuf rdy
   printf(" using tx_go condition %c\n", st.tx_go_condition);
@@ -1646,11 +1664,25 @@ int tsd_lcl_qsdc_go(void)
 
 int tsd_lcl_qsdc_stop(void)
 {
-  int e;
-  printf("tx 0  rx 0\n");
+  int k, e=0, e1;
+  if (!st.is_bob) {
+
+    
+    for(k=0;k<100*30;++k) {
+      if (h_r_fld(H_DAC_STATUS_QSDC_DATA_DONE)) break;
+      usleep(10);
+    }
+    if (k>=100*30) {
+      e=HDL_ERR_TIMO;
+    }
+  }
   qregs_txrx_new(0,0);
   qregs_set_alice_txing(0);
   tsd_iio_destroy_rxbuf(&tsd_st.iio);
+  
+  // TODO: do I need this:???
+  // lcl_iio_destroy_dac_bufs(&tsd_st.iio);
+  
   return e;
 }
 
@@ -1744,7 +1776,7 @@ int cmd_qsdc_cfg(int arg)
   cfg.bytes=i;
   DO(tsd_parse_key_int("do_tx=", &cfg.do_tx));
   //  DO(tsd_parse_key_int("frame_qty=", &rx_frame_qty));
-  // parsing DID NOT WORK
+  // TODO: FIX!!  parsing DID NOT WORK
   //  DO(tsd_parse_key_dbl("rnd_trip=", &cfg.est_round_trip_s));
   cfg.est_round_trip_s = 64.0e-6;
   
@@ -1945,12 +1977,21 @@ int tsd_serve(void) {
   int l_soc, c_soc, e, i;
   struct sockaddr_in srvr_addr;
 
+  printf("qregd\n");
+  printf("the demon that accesses quanet_regs\n");
+
   
   l_soc = socket(AF_INET, SOCK_STREAM, 0);
   if (l_soc<0) return err_fail("cant make socket to listen on ");
 
   e = setsockopt(l_soc, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
   if (e<0) return err_fail("cant set sockopt");
+  
+  // e = qna_usb_connect("/dev/ttyUSB1", &err_qna);
+  //  e = qregs_ser_qna_connect(rbuf, 1024);
+  //  if (e)
+  //    printf("*\n* ERR: %s\n*\n", errmsg);
+  //  else qna_connected=1;
   
   memset((void *)&srvr_addr, 0, sizeof(srvr_addr));
   srvr_addr.sin_family = AF_INET;
